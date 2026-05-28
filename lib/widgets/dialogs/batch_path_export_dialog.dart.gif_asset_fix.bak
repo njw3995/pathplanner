@@ -1,0 +1,295 @@
+import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:file_selector/file_selector.dart';
+import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
+import 'package:isolate_manager/isolate_manager.dart';
+import 'package:path/path.dart' as p;
+import 'package:pathplanner/path/pathplanner_path.dart';
+import 'package:pathplanner/trajectory/config.dart';
+import 'package:pathplanner/trajectory/trajectory.dart';
+import 'package:pathplanner/util/prefs.dart';
+import 'package:pathplanner/widgets/field_image.dart';
+import 'package:pathplanner/widgets/trajectory_render.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:widgets_to_image/widgets_to_image.dart';
+
+typedef BatchGifProgress = ({double progress, Uint8List? bytes});
+
+enum BatchPathExportMode {
+  darkGif,
+  darkTransparentPng,
+}
+
+class BatchPathExportDialog extends StatefulWidget {
+  final FieldImage fieldImage;
+  final SharedPreferences prefs;
+  final List<PathPlannerPath> paths;
+
+  const BatchPathExportDialog({
+    super.key,
+    required this.fieldImage,
+    required this.prefs,
+    required this.paths,
+  });
+
+  @override
+  State<BatchPathExportDialog> createState() => _BatchPathExportDialogState();
+}
+
+class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
+  final WidgetsToImageController _controller = WidgetsToImageController();
+  static IsolateManager? _gifManager;
+
+  late final ThemeData _darkTheme;
+  PathPlannerTrajectory? _activeTrajectory;
+  num? _sampleTime;
+  bool _showFieldImage = true;
+  bool _solidBackground = true;
+  bool _exporting = false;
+  double _progress = 0.0;
+  String _status = 'Choose an export format.';
+
+  @override
+  void initState() {
+    super.initState();
+    final teamColor = widget.prefs.getInt(PrefsKeys.teamColor) ?? Defaults.teamColor;
+    _darkTheme = ThemeData(
+      useMaterial3: true,
+      colorSchemeSeed: Color(teamColor),
+      brightness: Brightness.dark,
+    );
+
+    if (widget.paths.isNotEmpty) {
+      _activeTrajectory = _createTrajectory(widget.paths.first);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return AlertDialog(
+      backgroundColor: colorScheme.surface,
+      surfaceTintColor: colorScheme.surfaceTint,
+      title: const Text('Export All Path Images'),
+      content: SizedBox(
+        width: 820,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            SizedBox(
+              width: 800,
+              height: 400,
+              child: FittedBox(
+                child: WidgetsToImage(
+                  controller: _controller,
+                  child: Container(
+                    color: _solidBackground ? _darkTheme.colorScheme.surface : null,
+                    child: Theme(
+                      data: _darkTheme,
+                      child: _activeTrajectory == null
+                          ? SizedBox(
+                              width: widget.fieldImage.defaultSize.width / 4,
+                              height: widget.fieldImage.defaultSize.height / 4,
+                            )
+                          : TrajectoryRender(
+                              fieldImage: widget.fieldImage,
+                              prefs: widget.prefs,
+                              trajectory: _activeTrajectory!,
+                              sampleTime: _sampleTime,
+                              showFieldImage: _showFieldImage,
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(_status),
+            const SizedBox(height: 8),
+            LinearProgressIndicator(value: _exporting ? _progress : null),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _exporting ? null : Navigator.of(context).pop,
+          child: const Text('Close'),
+        ),
+        FilledButton.tonalIcon(
+          onPressed: _exporting
+              ? null
+              : () => _export(BatchPathExportMode.darkTransparentPng),
+          icon: const Icon(Icons.layers_clear_rounded),
+          label: const Text('Dark Transparent PNGs'),
+        ),
+        FilledButton.icon(
+          onPressed:
+              _exporting ? null : () => _export(BatchPathExportMode.darkGif),
+          icon: const Icon(Icons.movie_creation_outlined),
+          label: const Text('Dark GIFs'),
+        ),
+      ],
+    );
+  }
+
+  PathPlannerTrajectory? _createTrajectory(PathPlannerPath path) {
+    try {
+      return PathPlannerTrajectory(
+        path: path,
+        robotConfig: RobotConfig.fromPrefs(widget.prefs),
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _export(BatchPathExportMode mode) async {
+    final outputDir = await getDirectoryPath(
+      confirmButtonText: 'Export Here',
+    );
+
+    if (outputDir == null) {
+      return;
+    }
+
+    setState(() {
+      _exporting = true;
+      _progress = 0.0;
+      _status = 'Preparing export...';
+      _showFieldImage = mode == BatchPathExportMode.darkGif;
+      _solidBackground = mode == BatchPathExportMode.darkGif;
+    });
+
+    final extension = mode == BatchPathExportMode.darkGif ? 'gif' : 'png';
+    final failures = <String>[];
+    final paths = [...widget.paths]..sort((a, b) => a.name.compareTo(b.name));
+
+    for (int i = 0; i < paths.length; i++) {
+      final path = paths[i];
+      final trajectory = _createTrajectory(path);
+      if (trajectory == null || trajectory.states.isEmpty) {
+        failures.add(path.name);
+        continue;
+      }
+
+      setState(() {
+        _activeTrajectory = trajectory;
+        _sampleTime = mode == BatchPathExportMode.darkGif ? 0.0 : null;
+        _status = 'Exporting ${path.name} (${i + 1}/${paths.length})';
+        _progress = i / paths.length;
+      });
+
+      try {
+        final file = File(p.join(outputDir, '${_safeFileName(path.name)}.$extension'));
+        if (mode == BatchPathExportMode.darkGif) {
+          final bytes = await _captureGif(trajectory);
+          await file.writeAsBytes(bytes);
+        } else {
+          final bytes = await _capturePng();
+          if (bytes == null) {
+            throw Exception('Capture returned no image bytes');
+          }
+          await file.writeAsBytes(bytes);
+        }
+      } catch (_) {
+        failures.add(path.name);
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _exporting = false;
+      _progress = 1.0;
+      _sampleTime = null;
+      _status = failures.isEmpty
+          ? 'Exported ${paths.length} path(s) to $outputDir'
+          : 'Exported ${paths.length - failures.length}/${paths.length}. Failed: ${failures.join(', ')}';
+    });
+  }
+
+  Future<Uint8List?> _capturePng() async {
+    await WidgetsBinding.instance.endOfFrame;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    return _controller.capture(pixelRatio: 1);
+  }
+
+  Future<Uint8List> _captureGif(PathPlannerTrajectory trajectory) async {
+    final frames = <Uint8List>[];
+    double sampleTime = 0.0;
+    final totalTime = trajectory.getTotalTimeSeconds().toDouble();
+
+    while (sampleTime < totalTime) {
+      setState(() {
+        _sampleTime = sampleTime;
+      });
+      final frame = await _capturePng();
+      if (frame != null) {
+        frames.add(frame);
+      }
+      sampleTime += 0.04;
+    }
+
+    setState(() {
+      _sampleTime = totalTime;
+    });
+    final finalFrame = await _capturePng();
+    if (finalFrame != null) {
+      frames.add(finalFrame);
+    }
+
+    if (frames.isEmpty) {
+      throw Exception('No GIF frames were captured');
+    }
+
+    _gifManager ??= IsolateManager.createCustom(_encodeGif);
+    final BatchGifProgress result = await _gifManager!.compute(
+      frames,
+      callback: (progressValue) {
+        final BatchGifProgress progress = progressValue;
+        return progress.bytes != null;
+      },
+    );
+
+    if (result.bytes == null) {
+      throw Exception('GIF encoder returned no bytes');
+    }
+
+    return result.bytes!;
+  }
+
+  String _safeFileName(String name) {
+    final cleaned = name.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
+    return cleaned.isEmpty ? 'Path' : cleaned;
+  }
+
+  @isolateManagerCustomWorker
+  static void _encodeGif(dynamic params) {
+    IsolateManagerFunction.customFunction<BatchGifProgress, List<Uint8List>>(
+      params,
+      onEvent: (controller, message) {
+        final decoder = img.PngDecoder();
+        final encoder = img.GifEncoder(
+          numColors: 64,
+          dither: img.DitherKernel.none,
+        );
+
+        for (int i = 0; i < message.length; i++) {
+          encoder.addFrame(decoder.decode(message[i])!, duration: 4);
+          controller.sendResult((
+            progress: message.length <= 1 ? 1.0 : i / (message.length - 1),
+            bytes: null,
+          ));
+        }
+
+        return (progress: 1.0, bytes: encoder.finish());
+      },
+    );
+  }
+}

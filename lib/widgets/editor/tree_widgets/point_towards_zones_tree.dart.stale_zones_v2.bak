@@ -55,8 +55,6 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
 
   @override
   Widget build(BuildContext context) {
-    _queueRemoveStaleZones();
-
     return TreeCardNode(
       title: const Text('Point Towards Zones'),
       leading: const Icon(Icons.rotate_left_rounded),
@@ -104,75 +102,9 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
           child: Text('Zones at the top of the list have higher priority'),
         ),
         const SizedBox(height: 6),
-        for (int i = 0; i < zones.length; i++)
-            if (_zoneInRange(zones[i])) _buildZoneCard(i),
+        for (int i = 0; i < zones.length; i++) _buildZoneCard(i),
       ],
     );
-  }
-
-
-  bool _zoneInRange(PointTowardsZone zone) {
-    final maxWaypointPos = waypoints.length - 1.0;
-    return maxWaypointPos >= 0.0 &&
-        zone.minWaypointRelativePos >= 0.0 &&
-        zone.maxWaypointRelativePos >= 0.0 &&
-        zone.minWaypointRelativePos <= maxWaypointPos &&
-        zone.maxWaypointRelativePos <= maxWaypointPos &&
-        zone.minWaypointRelativePos <= zone.maxWaypointRelativePos;
-  }
-
-  void _queueRemoveStaleZones() {
-    if (!zones.any((zone) => !_zoneInRange(zone))) {
-      return;
-    }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-
-      final staleIndices = <int>[];
-      for (int i = 0; i < zones.length; i++) {
-        if (!_zoneInRange(zones[i])) {
-          staleIndices.add(i);
-        }
-      }
-
-      if (staleIndices.isEmpty) {
-        return;
-      }
-
-      widget.undoStack.add(Change(
-        PathPlannerPath.clonePointTowardsZones(zones),
-        () {
-          for (final index in staleIndices.reversed) {
-            if (index >= 0 && index < zones.length) {
-              zones.removeAt(index);
-            }
-          }
-          _controllers = List.generate(
-            zones.length,
-            (index) => ExpansibleController(),
-          );
-          _selectedZone = null;
-          widget.onZoneHovered?.call(null);
-          widget.onZoneSelected?.call(null);
-          widget.onPathChanged?.call();
-        },
-        (oldValue) {
-          widget.path.pointTowardsZones =
-              PathPlannerPath.clonePointTowardsZones(oldValue);
-          _controllers = List.generate(
-            zones.length,
-            (index) => ExpansibleController(),
-          );
-          _selectedZone = null;
-          widget.onZoneHovered?.call(null);
-          widget.onZoneSelected?.call(null);
-          widget.onPathChanged?.call();
-        },
-      ));
-    });
   }
 
   Widget _buildZoneCard(int zoneIdx) {

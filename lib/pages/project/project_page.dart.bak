@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:collection/collection.dart';
 import 'package:file/file.dart';
@@ -23,7 +22,6 @@ import 'package:pathplanner/services/pplib_telemetry.dart';
 import 'package:pathplanner/util/prefs.dart';
 import 'package:pathplanner/util/wpimath/geometry.dart';
 import 'package:pathplanner/widgets/conditional_widget.dart';
-import 'package:pathplanner/widgets/dialogs/batch_path_export_dialog.dart';
 import 'package:pathplanner/widgets/dialogs/management_dialog.dart';
 import 'package:pathplanner/widgets/field_image.dart';
 import 'package:pathplanner/widgets/renamable_title.dart';
@@ -87,13 +85,7 @@ class _ProjectPageState extends State<ProjectPage> {
   late int _pathGridCount;
   late int _autosGridCount;
   DirectoryWatcher? _chorWatcher;
-  DirectoryWatcher? _pathsWatcher;
-  DirectoryWatcher? _autosWatcher;
   StreamSubscription<WatchEvent>? _chorWatcherSub;
-  StreamSubscription<WatchEvent>? _pathsWatcherSub;
-  StreamSubscription<WatchEvent>? _autosWatcherSub;
-  Timer? _pathplannerReloadTimer;
-  bool _checkingPathplannerFiles = false;
 
   String _pathSearchQuery = '';
   String _autoSearchQuery = '';
@@ -182,166 +174,13 @@ class _ProjectPageState extends State<ProjectPage> {
   @override
   void dispose() {
     _chorWatcherSub?.cancel();
-    _pathsWatcherSub?.cancel();
-    _autosWatcherSub?.cancel();
-    _pathplannerReloadTimer?.cancel();
 
     _pathSearchController.dispose();
     _autoSearchController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadFolderPrefsFromSettingsFile() async {
-    final settingsFile =
-        fs.file(join(widget.pathplannerDirectory.path, 'settings.json'));
-
-    if (!await settingsFile.exists()) {
-      return;
-    }
-
-    try {
-      final decoded = jsonDecode(await settingsFile.readAsString());
-      if (decoded is! Map<String, dynamic>) {
-        return;
-      }
-
-      final pathFolders = (decoded[PrefsKeys.pathFolders] as List<dynamic>?)
-          ?.whereType<String>()
-          .toList();
-      final autoFolders = (decoded[PrefsKeys.autoFolders] as List<dynamic>?)
-          ?.whereType<String>()
-          .toList();
-
-      if (pathFolders != null) {
-        await widget.prefs.setStringList(PrefsKeys.pathFolders, pathFolders);
-      }
-      if (autoFolders != null) {
-        await widget.prefs.setStringList(PrefsKeys.autoFolders, autoFolders);
-      }
-    } catch (_) {
-      // Ignore malformed settings here. The project loader will keep using prefs/defaults.
-    }
-  }
-
-  void _ensurePathplannerWatchers() {
-    _pathsWatcher ??= DirectoryWatcher(
-      _pathsDirectory.path,
-      pollingDelay: const Duration(seconds: 1),
-    );
-    _pathsWatcherSub ??= _pathsWatcher!.events.listen((_) {
-      _schedulePathplannerReloadCheck();
-    });
-
-    _autosWatcher ??= DirectoryWatcher(
-      _autosDirectory.path,
-      pollingDelay: const Duration(seconds: 1),
-    );
-    _autosWatcherSub ??= _autosWatcher!.events.listen((_) {
-      _schedulePathplannerReloadCheck();
-    });
-  }
-
-  void _schedulePathplannerReloadCheck() {
-    if (_loading) {
-      return;
-    }
-
-    _pathplannerReloadTimer?.cancel();
-    _pathplannerReloadTimer = Timer(
-      const Duration(milliseconds: 500),
-      _reloadIfPathplannerFilesChanged,
-    );
-  }
-
-  Future<void> _reloadIfPathplannerFilesChanged() async {
-    if (_checkingPathplannerFiles || _loading || !mounted) {
-      return;
-    }
-
-    _checkingPathplannerFiles = true;
-    try {
-      if (!_pathplannerFilesChangedExternally()) {
-        return;
-      }
-
-      _load();
-
-      if (mounted) {
-        ScaffoldMessenger.of(this.context).showSnackBar(
-          const SnackBar(content: Text('Reloaded external PathPlanner changes')),
-        );
-      }
-    } finally {
-      _checkingPathplannerFiles = false;
-    }
-  }
-
-  bool _pathplannerFilesChangedExternally() {
-    return _filesChangedExternally<PathPlannerPath>(
-          directory: _pathsDirectory,
-          extension: '.path',
-          currentItems: _paths,
-          itemName: (path) => path.name,
-          itemLastModified: (path) => path.lastModified,
-        ) ||
-        _filesChangedExternally<PathPlannerAuto>(
-          directory: _autosDirectory,
-          extension: '.auto',
-          currentItems: _autos,
-          itemName: (auto) => auto.name,
-          itemLastModified: (auto) => auto.lastModified,
-        );
-  }
-
-  bool _filesChangedExternally<T>({
-    required Directory directory,
-    required String extension,
-    required Iterable<T> currentItems,
-    required String Function(T item) itemName,
-    required DateTime Function(T item) itemLastModified,
-  }) {
-    final knownModifiedTimes = <String, DateTime>{
-      for (final item in currentItems) itemName(item): itemLastModified(item),
-    };
-
-    final files = directory
-        .listSync()
-        .whereType<File>()
-        .where((file) => file.path.endsWith(extension))
-        .toList();
-
-    if (files.length != knownModifiedTimes.length) {
-      return true;
-    }
-
-    for (final file in files) {
-      final fileName = basenameWithoutExtension(file.path);
-      final knownModifiedTime = knownModifiedTimes[fileName];
-      if (knownModifiedTime == null) {
-        return true;
-      }
-
-      final diskModifiedTime = file.lastModifiedSync().toUtc();
-      final deltaMs = diskModifiedTime
-          .difference(knownModifiedTime.toUtc())
-          .inMilliseconds
-          .abs();
-
-      if (deltaMs > 1500) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   void _load() async {
-    await _loadFolderPrefsFromSettingsFile();
-    _pathFolders = widget.prefs.getStringList(PrefsKeys.pathFolders) ??
-        Defaults.pathFolders;
-    _autoFolders = widget.prefs.getStringList(PrefsKeys.autoFolders) ??
-        Defaults.autoFolders;
-
     // Make sure dirs exist
     _pathsDirectory =
         fs.directory(join(widget.pathplannerDirectory.path, 'paths'));
@@ -350,7 +189,6 @@ class _ProjectPageState extends State<ProjectPage> {
         fs.directory(join(widget.pathplannerDirectory.path, 'autos'));
     _autosDirectory.createSync(recursive: true);
     _choreoDirectory = fs.directory(widget.choreoDirectory);
-    _ensurePathplannerWatchers();
 
     var paths =
         await PathPlannerPath.loadAllPathsInDir(_pathsDirectory.path, fs);
@@ -482,7 +320,7 @@ class _ProjectPageState extends State<ProjectPage> {
               backgroundColor: colorScheme.surface,
               foregroundColor: colorScheme.onSurface,
               onPressed: () => showDialog(
-                context: this.context,
+                context: context,
                 builder: (BuildContext context) => ManagementDialog(
                   onEventRenamed: (String oldName, String newName) {
                     setState(() {
@@ -1731,10 +1569,6 @@ class _ProjectPageState extends State<ProjectPage> {
               ),
             ),
             const SizedBox(width: 14),
-            if (isPathsView) ...[
-              _buildExportAllPathsButton(),
-              const SizedBox(width: 8),
-            ],
             _buildFolderButton(
               isPathsView: isPathsView,
               onAddFolder: onAddFolder,
@@ -1842,25 +1676,6 @@ class _ProjectPageState extends State<ProjectPage> {
       icon: const Icon(Icons.sort_rounded),
       itemBuilder: (context) => _sortOptions(),
       onSelected: onSortChanged,
-    );
-  }
-
-  Widget _buildExportAllPathsButton() {
-    return IconButton.filledTonal(
-      tooltip: 'Export all paths as dark GIFs or dark transparent PNGs',
-      icon: const Icon(Icons.file_download_outlined),
-      onPressed: _paths.isEmpty
-          ? null
-          : () {
-              showDialog(
-                context: this.context,
-                builder: (context) => BatchPathExportDialog(
-                  fieldImage: widget.fieldImage,
-                  prefs: widget.prefs,
-                  paths: _paths,
-                ),
-              );
-            },
     );
   }
 

@@ -267,7 +267,7 @@ class _ProjectPageState extends State<ProjectPage> {
       _load();
 
       if (mounted) {
-        ScaffoldMessenger.of(this.context).showSnackBar(
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Reloaded external PathPlanner changes')),
         );
       }
@@ -482,7 +482,7 @@ class _ProjectPageState extends State<ProjectPage> {
               backgroundColor: colorScheme.surface,
               foregroundColor: colorScheme.onSurface,
               onPressed: () => showDialog(
-                context: this.context,
+                context: context,
                 builder: (BuildContext context) => ManagementDialog(
                   onEventRenamed: (String oldName, String newName) {
                     setState(() {
@@ -1853,7 +1853,7 @@ class _ProjectPageState extends State<ProjectPage> {
           ? null
           : () {
               showDialog(
-                context: this.context,
+                context: context,
                 builder: (context) => BatchPathExportDialog(
                   fieldImage: widget.fieldImage,
                   prefs: widget.prefs,

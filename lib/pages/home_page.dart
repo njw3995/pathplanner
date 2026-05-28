@@ -63,7 +63,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   static const _settingsDir = 'settings.json';
   int _selectedPage = 0;
   final PageController _pageController = PageController();
-  late bool _hotReload;
+  bool _hotReload = Defaults.hotReloadEnabled;
 
   FileSystem get fs => widget.fs;
 

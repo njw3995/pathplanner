@@ -141,7 +141,6 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
               if (_treeOnRight)
                 PreviewSeekbar(
                   previewController: _previewController,
-                  simulatedPath: _simTraj,
                   onPauseStateChanged: (value) => _paused = value,
                   totalPathTime: _simTraj?.states.last.timeSeconds ?? 1.0,
                 ),
@@ -207,7 +206,6 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
               if (!_treeOnRight)
                 PreviewSeekbar(
                   previewController: _previewController,
-                  simulatedPath: _simTraj,
                   onPauseStateChanged: (value) => _paused = value,
                   totalPathTime: _simTraj?.states.last.timeSeconds ?? 1.0,
                 ),

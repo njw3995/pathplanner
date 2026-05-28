@@ -480,6 +480,17 @@ class _SplitPathEditorState extends State<SplitPathEditor>
             ),
           ),
         ),
+
+        Positioned(
+          left: 16,
+          bottom: 72,
+          child: FloatingActionButton.extended(
+            heroTag: 'syncLinkedHeadings',
+            icon: const Icon(Icons.link),
+            label: const Text('Sync linked headings'),
+            onPressed: _syncLinkedHandoffHeadings,
+          ),
+        ),,
         MultiSplitViewTheme(
           data: MultiSplitViewThemeData(
             dividerPainter: DividerPainters.grooved1(
@@ -739,36 +750,6 @@ class _SplitPathEditorState extends State<SplitPathEditor>
             ],
           ),
         ),
-      Positioned(
-        right: 24,
-        bottom: 140,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FilledButton.icon(
-              icon: const Icon(Icons.speed),
-              label: const Text('Optimize End'),
-              onPressed: _optimizeEndVelocity,
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              icon: const Icon(Icons.sync_alt),
-              label: const Text('Sync Vel'),
-              onPressed: _syncLinkedVelocities,
-            ),
-          ],
-        ),
-      ),
-
-      Positioned(
-        right: 24,
-        bottom: 84,
-        child: FilledButton.icon(
-          icon: const Icon(Icons.link),
-          label: const Text('Sync linked headings'),
-          onPressed: _syncLinkedHandoffHeadings,
-        ),
-      ),
       ],
     );
   }
@@ -821,15 +802,15 @@ class _SplitPathEditorState extends State<SplitPathEditor>
         final starts = startsByLink[linkedName];
 
         if (starts == null || starts.isEmpty) {
-          skipped.add('$linkedName: no outgoing start handle');
+          skipped.add('$linkedName: no starting path with a next control handle');
           continue;
         }
 
         double sumX = 0.0;
         double sumY = 0.0;
-        for (final direction in starts) {
-          sumX += direction[0];
-          sumY += direction[1];
+        for (final dir in starts) {
+          sumX += dir[0];
+          sumY += dir[1];
         }
 
         final averageLength = sqrt((sumX * sumX) + (sumY * sumY));
@@ -843,8 +824,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
         final minDot = cos(maxHeadingSpreadDeg * pi / 180.0);
         bool ambiguous = false;
 
-        for (final direction in starts) {
-          final dot = (targetX * direction[0]) + (targetY * direction[1]);
+        for (final dir in starts) {
+          final dot = (targetX * dir[0]) + (targetY * dir[1]);
           if (dot < minDot) {
             ambiguous = true;
             break;
@@ -868,7 +849,7 @@ class _SplitPathEditorState extends State<SplitPathEditor>
           final handleLength = sqrt((handleDx * handleDx) + (handleDy * handleDy));
 
           if (handleLength <= minHandleLength) {
-            skipped.add('${path.name}: end handle too short at $linkedName');
+            skipped.add('${path.name}: end handle is too short at $linkedName');
             continue;
           }
 
@@ -877,9 +858,7 @@ class _SplitPathEditorState extends State<SplitPathEditor>
             last.anchor.y - (targetY * handleLength),
           );
 
-          final deltaX = prevControl.x - newPrevControl.x;
-          final deltaY = prevControl.y - newPrevControl.y;
-          final delta = sqrt((deltaX * deltaX) + (deltaY * deltaY));
+          final delta = prevControl.getDistance(newPrevControl);
           if (delta <= 1E-5) {
             continue;
           }
@@ -903,12 +882,12 @@ class _SplitPathEditorState extends State<SplitPathEditor>
         return;
       }
 
-      final changedPreview = changedNames.take(12).join('\n');
-      final skippedPreview = skipped.take(12).join('\n');
-      final changedExtra = changedNames.length > 12
+      final previewChanged = changedNames.take(12).join('\n');
+      final previewSkipped = skipped.take(12).join('\n');
+      final extraChanged = changedNames.length > 12
           ? '\n...and ${changedNames.length - 12} more'
           : '';
-      final skippedExtra = skipped.length > 12
+      final extraSkipped = skipped.length > 12
           ? '\n...and ${skipped.length - 12} more'
           : '';
 
@@ -922,8 +901,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
               child: SingleChildScrollView(
                 child: Text(
                   'Changed paths: $changedPaths\n\n'
-                  '${changedNames.isEmpty ? 'No path handles needed changes.' : 'Updated:\n$changedPreview$changedExtra'}\n\n'
-                  '${skipped.isEmpty ? 'No linked waypoints were skipped.' : 'Skipped:\n$skippedPreview$skippedExtra'}',
+                  '${changedNames.isEmpty ? 'No path handles needed changes.' : 'Updated:\n$previewChanged$extraChanged'}\n\n'
+                  '${skipped.isEmpty ? 'No linked waypoints were skipped.' : 'Skipped:\n$previewSkipped$extraSkipped'}',
                 ),
               ),
             ),
@@ -950,223 +929,7 @@ class _SplitPathEditorState extends State<SplitPathEditor>
     }
   }
 
-
-
-
-
-
-  void _optimizeEndVelocity() {
-    final oldEndVelocity = widget.path.goalEndState.velocityMPS;
-    final startVelocity = widget.path.idealStartingState.velocityMPS;
-    final constraints = widget.path.useDefaultConstraints
-        ? _getDefaultConstraints()
-        : widget.path.globalConstraints;
-    final maxVelocity = constraints.maxVelocityMPS.isFinite
-        ? constraints.maxVelocityMPS.toDouble()
-        : _getDefaultConstraints().maxVelocityMPS.toDouble();
-
-    double bestEndVelocity = oldEndVelocity.toDouble();
-    double bestScore = double.negativeInfinity;
-    double bestNearEndVelocity = 0.0;
-
-    for (double endVelocity = 0.0;
-        endVelocity <= maxVelocity + 1e-9;
-        endVelocity += 0.25) {
-      widget.path.goalEndState.velocityMPS = endVelocity;
-
-      PathPlannerTrajectory trajectory;
-      try {
-        trajectory = PathPlannerTrajectory(
-          path: widget.path,
-          robotConfig: RobotConfig.fromPrefs(widget.prefs),
-        );
-      } catch (_) {
-        continue;
-      }
-
-      final totalTime = trajectory.getTotalTimeSeconds().toDouble();
-      if (!totalTime.isFinite || totalTime <= 0.0) {
-        continue;
-      }
-
-      final nearEndTime = max(0.0, totalTime - 0.05);
-      final nearEndVelocity =
-          trajectory.sample(nearEndTime).fieldSpeeds.linearVel.toDouble();
-      final velocityError = (endVelocity - nearEndVelocity).abs();
-
-      double score = endVelocity * 4.0;
-      score -= velocityError * 6.0;
-      score -= totalTime * 0.10;
-
-      if (velocityError > 0.50) {
-        score -= (velocityError - 0.50) * 18.0;
-      }
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestEndVelocity = endVelocity;
-        bestNearEndVelocity = nearEndVelocity;
-      }
-    }
-
-    widget.path.goalEndState.velocityMPS = oldEndVelocity;
-
-    if (!bestScore.isFinite) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Could not optimize end velocity')),
-      );
-      return;
-    }
-
-    widget.undoStack.add(Change(
-      oldEndVelocity,
-      () {
-        _setEndVelocity(bestEndVelocity);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Optimized end velocity: ${bestEndVelocity.toStringAsFixed(2)} m/s '
-              '(near end ${bestNearEndVelocity.toStringAsFixed(2)} m/s, '
-              'start kept ${startVelocity.toStringAsFixed(2)} m/s)',
-            ),
-          ),
-        );
-      },
-      (oldValue) => _setEndVelocity(oldValue as num),
-    ));
-  }
-
-  void _setEndVelocity(num endVelocity) {
-    setState(() {
-      widget.path.goalEndState.velocityMPS = endVelocity;
-      widget.path.generateAndSavePath();
-      _simulatePath();
-      widget.onPathChanged?.call();
-    });
-
-    if (widget.hotReload) {
-      widget.telemetry?.hotReloadPath(widget.path);
-    }
-  }
-
-  Future<void> _syncLinkedVelocities() async {
-    final paths = await PathPlannerPath.loadAllPathsInDir(
-      widget.path.pathDir,
-      widget.path.fs,
-    );
-
-    final currentStartLink = widget.path.waypoints.first.linkedName;
-    final currentEndLink = widget.path.waypoints.last.linkedName;
-    final oldValues = <PathPlannerPath, List<num>>{};
-    final changes = <String>[];
-    final skipped = <String>[];
-
-    PathPlannerPath currentPathObject(PathPlannerPath path) {
-      return path.name == widget.path.name ? widget.path : path;
-    }
-
-    void remember(PathPlannerPath path) {
-      final actual = currentPathObject(path);
-      oldValues.putIfAbsent(
-        actual,
-        () => [
-          actual.idealStartingState.velocityMPS,
-          actual.goalEndState.velocityMPS,
-        ],
-      );
-    }
-
-    if (currentStartLink != null) {
-      final incoming = paths
-          .where((p) =>
-              p.name != widget.path.name &&
-              p.waypoints.isNotEmpty &&
-              p.waypoints.last.linkedName == currentStartLink)
-          .toList();
-      final incomingValues = incoming
-          .map((p) => p.goalEndState.velocityMPS.toDouble())
-          .map((v) => (v * 1000).round() / 1000.0)
-          .toSet();
-
-      if (incomingValues.length == 1) {
-        final target = incomingValues.first;
-        if ((widget.path.idealStartingState.velocityMPS - target).abs() > 1e-6) {
-          remember(widget.path);
-          widget.path.idealStartingState.velocityMPS = target;
-          changes.add('Start velocity <- ${target.toStringAsFixed(2)} m/s from $currentStartLink');
-        }
-      } else if (incomingValues.length > 1) {
-        skipped.add('Start $currentStartLink has multiple incoming velocities: ${incomingValues.join(', ')}');
-      }
-    }
-
-    if (currentEndLink != null) {
-      final target = widget.path.goalEndState.velocityMPS;
-      final outgoing = paths
-          .where((p) =>
-              p.name != widget.path.name &&
-              p.waypoints.isNotEmpty &&
-              p.waypoints.first.linkedName == currentEndLink)
-          .toList();
-
-      for (final path in outgoing) {
-        final actual = currentPathObject(path);
-        if ((actual.idealStartingState.velocityMPS - target).abs() > 1e-6) {
-          remember(actual);
-          actual.idealStartingState.velocityMPS = target;
-          changes.add('${actual.name} start <- ${target.toStringAsFixed(2)} m/s from ${widget.path.name} end');
-        }
-      }
-    }
-
-    if (oldValues.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(skipped.isEmpty
-              ? 'No linked velocity changes found'
-              : 'No changes. Skipped: ${skipped.join('; ')}'),
-        ),
-      );
-      return;
-    }
-
-    widget.undoStack.add(Change(
-      oldValues.map((path, values) => MapEntry(path, List<num>.from(values))),
-      () => _setLinkedVelocityChanges(oldValues.keys.toList()),
-      (oldValue) {
-        final values = oldValue as Map<PathPlannerPath, List<num>>;
-        for (final entry in values.entries) {
-          entry.key.idealStartingState.velocityMPS = entry.value[0];
-          entry.key.goalEndState.velocityMPS = entry.value[1];
-        }
-        _setLinkedVelocityChanges(values.keys.toList());
-      },
-    ));
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          'Synced ${changes.length} velocity value(s)'
-          '${skipped.isEmpty ? '' : '. Skipped ${skipped.length} ambiguous link(s).'}',
-        ),
-      ),
-    );
-  }
-
-  void _setLinkedVelocityChanges(List<PathPlannerPath> changedPaths) {
-    setState(() {
-      for (final path in changedPaths) {
-        path.generateAndSavePath();
-      }
-      _simulatePath();
-      widget.onPathChanged?.call();
-    });
-
-    if (widget.hotReload) {
-      widget.telemetry?.hotReloadPath(widget.path);
-    }
-  }
-
+  // marked as async so it can be called from initState
   void _simulatePath() async {
     if (widget.simulate) {
       setState(() {

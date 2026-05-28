@@ -15,7 +15,6 @@ class TrajectoryRender extends StatelessWidget {
   final SharedPreferences prefs;
   final PathPlannerTrajectory trajectory;
   final num? sampleTime;
-  final bool showFieldImage;
 
   const TrajectoryRender({
     super.key,
@@ -23,7 +22,6 @@ class TrajectoryRender extends StatelessWidget {
     required this.prefs,
     required this.trajectory,
     required this.sampleTime,
-    this.showFieldImage = true,
   });
 
   @override
@@ -34,7 +32,7 @@ class TrajectoryRender extends StatelessWidget {
       child: Center(
         child: Stack(
           children: [
-            if (showFieldImage) fieldImage.getWidget(),
+            fieldImage.getWidget(),
             Positioned.fill(
               child: CustomPaint(
                 painter: TrajectoryPainter(

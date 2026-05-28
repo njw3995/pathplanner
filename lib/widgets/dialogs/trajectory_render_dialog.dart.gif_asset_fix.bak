@@ -234,9 +234,7 @@ class _TrajectoryRenderDialogState extends State<TrajectoryRenderDialog> {
     }
 
     final imageBytes = await _controller.capture(pixelRatio: 1);
-    if (imageBytes != null && imageBytes.isNotEmpty) {
-      _gifImagesBytes.add(imageBytes);
-    }
+    _gifImagesBytes.add(imageBytes!);
 
     if (!mounted) {
       return;
@@ -308,27 +306,13 @@ class _TrajectoryRenderDialogState extends State<TrajectoryRenderDialog> {
         numColors: 64,
         dither: img.DitherKernel.none,
       );
-      var addedFrames = 0;
-      final denom = message.length <= 1 ? 1 : message.length - 1;
 
       for (int i = 0; i < message.length; i++) {
-        try {
-          final decoded = decoder.decode(message[i]);
-          if (decoded != null) {
-            encoder.addFrame(decoded, duration: 4);
-            addedFrames++;
-          }
-        } catch (_) {
-          // Skip bad captures instead of crashing the desktop app.
-        }
+        encoder.addFrame(decoder.decode(message[i])!, duration: 4);
         controller.sendResult((
-          progress: (i / denom),
+          progress: (i / (message.length - 1)),
           bytes: null, // Only bother sending the bytes for the final result
         ));
-      }
-
-      if (addedFrames == 0) {
-        return (progress: 1.0, bytes: null);
       }
 
       return (progress: 1.0, bytes: encoder.finish());
