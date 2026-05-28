@@ -75,6 +75,56 @@ class _AppSettingsState extends State<AppSettings> {
   }
 
   @override
+
+  Future<void> _deleteCustomFieldImage(FieldImage field) async {
+    Directory appDir = await getApplicationSupportDirectory();
+    Directory imagesDir = Directory(join(appDir.path, 'custom_fields'));
+
+    final candidatePaths = <String>[
+      join(imagesDir.path, field.customFileName),
+      join(
+        imagesDir.path,
+        '${field.name}_${field.pixelsPerMeter.toStringAsFixed(2)}.${field.extension}',
+      ),
+      join(
+        imagesDir.path,
+        '${field.name}_${field.pixelsPerMeter.toStringAsFixed(2)}_${field.marginMeters.toStringAsFixed(2)}.${field.extension}',
+      ),
+    ];
+
+    final checkedPaths = <String>{};
+    for (final path in candidatePaths) {
+      if (!checkedPaths.add(path)) {
+        continue;
+      }
+
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+        return;
+      }
+    }
+
+    if (!await imagesDir.exists()) {
+      return;
+    }
+
+    final prefix = '${field.name}_';
+    await for (final entity in imagesDir.list()) {
+      if (entity is! File) {
+        continue;
+      }
+
+      final fileName = basename(entity.path);
+      if (fileName.startsWith(prefix) &&
+          fileName.endsWith('.${field.extension}')) {
+        await entity.delete();
+        return;
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     ColorScheme colorScheme = Theme.of(context).colorScheme;
 
@@ -429,7 +479,7 @@ class _AppSettingsState extends State<AppSettings> {
                                 File imageFile = File(join(imagesDir.path,
                                     '${_selectedField.name}_${_selectedField.pixelsPerMeter.toStringAsFixed(2)}.${_selectedField.extension}'));
 
-                                await imageFile.delete();
+                                await _deleteCustomFieldImage(_selectedField);
                                 widget.fieldImages.remove(_selectedField);
                                 setState(() {
                                   _selectedField = FieldImage.defaultField;
@@ -533,8 +583,7 @@ class _AppSettingsState extends State<AppSettings> {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return ImportFieldDialog(onImport:
-            (String name, double pixelsPerMeter, File imageFile) async {
+        return ImportFieldDialog(onImport: (String name, double pixelsPerMeter, double marginMeters, File imageFile) async {
           for (FieldImage image in widget.fieldImages) {
             if (image.name == name) {
               showDialog(
@@ -570,8 +619,10 @@ class _AppSettingsState extends State<AppSettings> {
           imagesDir.createSync(recursive: true);
 
           String imageExtension = imageFile.path.split('.').last;
-          String importedPath = join(imagesDir.path,
-              '${name}_${pixelsPerMeter.toStringAsFixed(2)}.$imageExtension');
+          String importedFileName = marginMeters == 0.0
+          ? '${name}_${pixelsPerMeter.toStringAsFixed(2)}.$imageExtension'
+          : '${name}_${pixelsPerMeter.toStringAsFixed(2)}_${marginMeters.toStringAsFixed(2)}.$imageExtension';
+      String importedPath = join(imagesDir.path, importedFileName);
 
           await imageFile.copy(importedPath);
 

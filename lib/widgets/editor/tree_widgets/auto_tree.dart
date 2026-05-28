@@ -15,6 +15,7 @@ class AutoTree extends StatefulWidget {
   final num? autoRuntime;
   final Function(String?)? onEditPathPressed;
   final VoidCallback? onRenderAuto;
+  final VoidCallback? onImportAutoToStudio;
 
   const AutoTree({
     super.key,
@@ -27,6 +28,7 @@ class AutoTree extends StatefulWidget {
     this.autoRuntime,
     this.onEditPathPressed,
     this.onRenderAuto,
+    this.onImportAutoToStudio,
   });
 
   @override
@@ -60,6 +62,14 @@ class _AutoTreeState extends State<AutoTree> {
                     child: IconButton(
                       onPressed: widget.onRenderAuto,
                       icon: const Icon(Icons.ios_share),
+                    ),
+                  ),
+                  Tooltip(
+                    message: 'Import to Auto Studio',
+                    waitDuration: const Duration(milliseconds: 500),
+                    child: IconButton(
+                      onPressed: widget.onImportAutoToStudio,
+                      icon: const Icon(Icons.auto_awesome_motion_rounded),
                     ),
                   ),
                   Tooltip(

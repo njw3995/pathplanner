@@ -145,7 +145,8 @@ class _EventMarkersTreeState extends State<EventMarkersTree> {
           Expanded(
             child: DropdownButtonHideUnderline(
               child: DropdownButton2<String>(
-                hint: const Text('Event Name'),
+                isExpanded: true,
+                hint: const Text('Event Name', overflow: TextOverflow.ellipsis),
                 value: markers[markerIdx].name.isEmpty
                     ? null
                     : markers[markerIdx].name,
@@ -161,6 +162,7 @@ class _EventMarkersTreeState extends State<EventMarkersTree> {
                               fontWeight: FontWeight.normal,
                               color: colorScheme.onSurface,
                             ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ]
@@ -175,6 +177,7 @@ class _EventMarkersTreeState extends State<EventMarkersTree> {
                                   fontWeight: FontWeight.normal,
                                   color: colorScheme.onSurface,
                                 ),
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ),
                       ],

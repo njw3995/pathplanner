@@ -13,6 +13,7 @@ class ProjectItemCard extends StatefulWidget {
   final List<List<Translation2d>> paths;
   final VoidCallback onOpened;
   final VoidCallback? onDuplicated;
+  final VoidCallback? onSaveAs;
   final VoidCallback? onDeleted;
   final ValueChanged<String>? onRenamed;
   final bool compact;
@@ -27,6 +28,7 @@ class ProjectItemCard extends StatefulWidget {
     required this.paths,
     required this.onOpened,
     this.onDuplicated,
+    this.onSaveAs,
     this.onDeleted,
     this.onRenamed,
     this.compact = false,
@@ -78,14 +80,16 @@ class _ProjectItemCardState extends State<ProjectItemCard> {
                           child: PopupMenuButton<String>(
                             tooltip: '',
                             onSelected: (value) {
-                              if (value == 'duplicate') {
-                                widget.onDuplicated?.call();
-                              } else if (value == 'delete') {
-                                _showDeleteDialog();
-                              }
-                            },
-                            itemBuilder: (_) {
-                              return const [
+                    if (value == 'duplicate') {
+                      widget.onDuplicated?.call();
+                    } else if (value == 'saveAs') {
+                      widget.onSaveAs?.call();
+                    } else if (value == 'delete') {
+                      widget.onDeleted?.call();
+                    }
+                  },
+                  itemBuilder: (_) {
+                              return [
                                 PopupMenuItem(
                                   value: 'duplicate',
                                   child: Row(
@@ -96,7 +100,18 @@ class _ProjectItemCardState extends State<ProjectItemCard> {
                                     ],
                                   ),
                                 ),
-                                PopupMenuItem(
+                                                                if (widget.onSaveAs != null)
+                                  const PopupMenuItem(
+                                    value: 'saveAs',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.save_as_rounded),
+                                        SizedBox(width: 12),
+                                        Text('Save As'),
+                                      ],
+                                    ),
+                                  ),
+PopupMenuItem(
                                   value: 'delete',
                                   child: Row(
                                     children: [

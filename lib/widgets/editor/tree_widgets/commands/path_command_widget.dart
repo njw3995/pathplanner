@@ -45,6 +45,14 @@ class _PathCommandWidgetState extends State<PathCommandWidget> {
   @override
   Widget build(BuildContext context) {
     ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final selectedPathName = widget.command.pathName;
+    final dropdownPathNames = <String>[
+      ...widget.allPathNames.map((pathName) => pathName.toString()).toSet(),
+    ];
+    if (selectedPathName != null &&
+        !dropdownPathNames.contains(selectedPathName)) {
+      dropdownPathNames.add(selectedPathName);
+    }
 
     return Row(
       children: [
@@ -53,15 +61,15 @@ class _PathCommandWidgetState extends State<PathCommandWidget> {
             child: DropdownButton2<String>(
               isExpanded: true,
               hint: const Text('Path Name'),
-              value: widget.command.pathName,
+              value: selectedPathName,
               items: List.generate(
-                widget.allPathNames.length,
+                dropdownPathNames.length,
                 (index) => DropdownMenuItem(
-                  value: widget.allPathNames[index],
+                  value: dropdownPathNames[index],
                   child: Tooltip(
-                    message: widget.allPathNames[index],
+                    message: dropdownPathNames[index],
                     child: Text(
-                      widget.allPathNames[index],
+                      dropdownPathNames[index],
                       style: TextStyle(
                         fontWeight: FontWeight.normal,
                         color: colorScheme.onPrimaryContainer,

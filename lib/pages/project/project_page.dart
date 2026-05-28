@@ -13,6 +13,7 @@ import 'package:pathplanner/pages/auto_editor_page.dart';
 import 'package:pathplanner/pages/choreo_path_editor_page.dart';
 import 'package:pathplanner/pages/path_editor_page.dart';
 import 'package:pathplanner/pages/project/project_item_card.dart';
+import 'package:pathplanner/pages/project/auto_studio_page.dart';
 import 'package:pathplanner/auto/pathplanner_auto.dart';
 import 'package:pathplanner/path/choreo_path.dart';
 import 'package:pathplanner/path/event_marker.dart';
@@ -30,6 +31,7 @@ import 'package:pathplanner/widgets/renamable_title.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:undo/undo.dart';
 import 'package:watcher/watcher.dart';
+import 'package:pathplanner/commands/path_command.dart';
 
 class ProjectPage extends StatefulWidget {
   static Set<String> events = {};
@@ -391,8 +393,12 @@ class _ProjectPageState extends State<ProjectPage> {
       _paths = paths;
       _autos = autos;
       _choreoPaths = choreoPaths;
-      _pathFolder = null;
-      _autoFolder = null;
+      if (_pathFolder != null && !_pathFolders.contains(_pathFolder)) {
+        _pathFolder = null;
+      }
+      if (_autoFolder != null && !_autoFolders.contains(_autoFolder)) {
+        _autoFolder = null;
+      }
       _inChoreoFolder = false;
 
       if (_paths.isEmpty) {
@@ -969,8 +975,7 @@ class _ProjectPageState extends State<ProjectPage> {
                                                       _pathFolders[i]) {
                                                     if (_pathFolders
                                                         .contains(newName)) {
-                                                      showDialog(
-                                                          context: context,
+                                                      showDialog(context: this.context,
                                                           builder: (BuildContext
                                                               context) {
                                                             ColorScheme
@@ -1067,6 +1072,395 @@ class _ProjectPageState extends State<ProjectPage> {
     );
   }
 
+
+  String _safeSaveAsName(String name) {
+    final cleaned = name.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
+    return cleaned.replaceAll(RegExp(r'\s+'), ' ');
+  }
+
+  String _uniqueCopyName(String baseName, Set<String> existingNames) {
+    final cleanedBase = _safeSaveAsName('$baseName Copy');
+    if (!existingNames.contains(cleanedBase)) {
+      return cleanedBase;
+    }
+
+    int copyIndex = 2;
+    while (existingNames.contains('$cleanedBase $copyIndex')) {
+      copyIndex++;
+    }
+
+    return '$cleanedBase $copyIndex';
+  }
+
+  Future<String?> _promptSaveAsName({
+    required BuildContext context,
+    required String title,
+    required String initialName,
+    required bool Function(String name) exists,
+    required String extension,
+  }) async {
+    final controller = TextEditingController(text: initialName);
+    controller.selection = TextSelection.fromPosition(
+      TextPosition(offset: controller.text.length),
+    );
+
+    final rawName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: SizedBox(
+            width: 420,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (value) => Navigator.of(dialogContext).pop(value),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+              child: const Text('Save As'),
+            ),
+          ],
+        );
+      },
+    );
+
+    // Do not dispose this immediately. Flutter may still rebuild the closing
+    // dialog route for one frame after showDialog returns.
+
+    if (rawName == null || rawName.trim().isEmpty) {
+      return null;
+    }
+
+    final newName = _safeSaveAsName(rawName);
+    if (newName.isEmpty) {
+      return null;
+    }
+
+    if (exists(newName)) {
+      _showSaveAsError(
+        context,
+        'The file "$newName$extension" already exists.',
+      );
+      return null;
+    }
+
+    return newName;
+  }
+
+  void _showSaveAsError(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        final colorScheme = Theme.of(dialogContext).colorScheme;
+        return AlertDialog(
+          backgroundColor: colorScheme.surface,
+          surfaceTintColor: colorScheme.surfaceTint,
+          title: const Text('Unable to Save As'),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: Navigator.of(dialogContext).pop,
+              child: const Text('OK'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _ensurePathFolder(String folder) {
+    if (folder.trim().isEmpty) {
+      return;
+    }
+
+    if (!_pathFolders.contains(folder)) {
+      _pathFolders.add(folder);
+      _pathFolders.sort();
+      widget.prefs.setStringList(PrefsKeys.pathFolders, _pathFolders);
+      widget.onFoldersChanged?.call();
+    }
+  }
+
+  void _prefixLinkedWaypointsInJson(
+    Map<String, dynamic> pathJson,
+    String prefix,
+  ) {
+    final waypoints = pathJson['waypoints'];
+    if (waypoints is! List) {
+      return;
+    }
+
+    for (final waypoint in waypoints) {
+      if (waypoint is! Map) {
+        continue;
+      }
+
+      final linkedName = waypoint['linkedName'];
+      if (linkedName is String &&
+          linkedName.isNotEmpty &&
+          !linkedName.startsWith(prefix)) {
+        waypoint['linkedName'] = '$prefix$linkedName';
+      }
+    }
+  }
+
+      PathPlannerPath _copyPathFile({
+    required String sourcePathName,
+    required String newPathName,
+    required String folder,
+    required String linkedWaypointPrefix,
+  }) {
+    final src = fs.file(join(_pathsDirectory.path, '$sourcePathName.path'));
+    final dst = fs.file(join(_pathsDirectory.path, '$newPathName.path'));
+
+    if (!src.existsSync()) {
+      throw StateError('Missing path file "$sourcePathName.path"');
+    }
+
+    if (dst.existsSync()) {
+      throw StateError('The path "$newPathName.path" already exists.');
+    }
+
+    final decoded = jsonDecode(src.readAsStringSync());
+    if (decoded is! Map) {
+      throw StateError('Path file "$sourcePathName.path" is not a JSON object.');
+    }
+
+    final pathJson = Map<String, dynamic>.from(decoded);
+    pathJson['folder'] = folder;
+    _prefixLinkedWaypointsInJson(pathJson, linkedWaypointPrefix);
+
+    const encoder = JsonEncoder.withIndent('  ');
+    dst.writeAsStringSync('${encoder.convert(pathJson)}\n');
+
+    final copiedPath = PathPlannerPath.fromJson(
+      pathJson,
+      newPathName,
+      _pathsDirectory.path,
+      fs,
+    );
+    copiedPath.lastModified = dst.lastModifiedSync().toUtc();
+    return copiedPath;
+  }
+
+  Future<void> _saveAsPath(PathPlannerPath source, BuildContext context) async {
+    final pathNames = _paths.map((path) => path.name).toSet();
+
+    final newName = await _promptSaveAsName(
+      context: context,
+      title: 'Save Path As',
+      initialName: '${source.name} Copy',
+      exists: pathNames.contains,
+      extension: '.path',
+    );
+
+    if (newName == null) {
+      return;
+    }
+
+    try {
+      final copiedPath = _copyPathFile(
+        sourcePathName: source.name,
+        newPathName: newName,
+        folder: source.folder ?? '',
+        linkedWaypointPrefix: '${newName}_',
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _paths.add(copiedPath);
+        _sortPaths(_pathSortValue);
+      });
+
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadPath(copiedPath);
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Saved path "$newName.path"'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+      Future<void> _saveAsAuto(PathPlannerAuto source, BuildContext context) async {
+    final autoNames = _autos.map((auto) => auto.name).toSet();
+
+    final newName = await _promptSaveAsName(
+      context: context,
+      title: 'Save Auto As',
+      initialName: '${source.name} Copy',
+      exists: autoNames.contains,
+      extension: '.auto',
+    );
+
+    if (newName == null) {
+      return;
+    }
+
+    try {
+      final copiedAuto = source.duplicate(newName);
+      copiedAuto.folder = source.folder;
+
+      if (!copiedAuto.choreoAuto) {
+        final copiedPathFolder = newName;
+        _ensurePathFolder(copiedPathFolder);
+
+        final originalPathNames = <String>[];
+        for (final pathName in source.getAllPathNames()) {
+          if (!originalPathNames.contains(pathName)) {
+            originalPathNames.add(pathName);
+          }
+        }
+
+        final mapping = <String, String>{};
+        final copiedPaths = <PathPlannerPath>[];
+
+        for (final sourcePathName in originalPathNames) {
+          final copiedPathName = _safeSaveAsName('$newName - $sourcePathName');
+          final copiedPath = _copyPathFile(
+            sourcePathName: sourcePathName,
+            newPathName: copiedPathName,
+            folder: copiedPathFolder,
+            linkedWaypointPrefix: '${newName}_',
+          );
+
+          mapping[sourcePathName] = copiedPathName;
+          copiedPaths.add(copiedPath);
+        }
+
+        _rewriteAutoPathNames(copiedAuto.sequence, mapping);
+
+        setState(() {
+          _paths.addAll(copiedPaths);
+          _sortPaths(_pathSortValue);
+        });
+      }
+
+      copiedAuto.saveFile();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _autos.add(copiedAuto);
+        _sortAutos(_autoSortValue);
+      });
+
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadAuto(copiedAuto);
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Saved auto "$newName.auto"'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+
+  void _rewriteAutoPathNames(Command command, Map<String, String> mapping) {
+    void walk(Command cmd) {
+      if (cmd is PathCommand && cmd.pathName != null) {
+        cmd.pathName = mapping[cmd.pathName] ?? cmd.pathName;
+      } else if (cmd is CommandGroup) {
+        for (final child in cmd.commands) {
+          walk(child);
+        }
+      }
+    }
+
+    walk(command);
+  }
+
+  void _duplicatePath(PathPlannerPath source) {
+    final pathNames = _paths.map((path) => path.name).toSet();
+    final newName = _uniqueCopyName(source.name, pathNames);
+
+    try {
+      final copiedPath = _copyPathFile(
+        sourcePathName: source.name,
+        newPathName: newName,
+        folder: source.folder ?? '',
+        linkedWaypointPrefix: '',
+      );
+
+      setState(() {
+        _paths.add(copiedPath);
+        _sortPaths(_pathSortValue);
+      });
+
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadPath(copiedPath);
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Duplicated path "$newName.path"'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      _showSaveAsError(this.context, err.toString());
+    }
+  }
+
+  void _duplicateAuto(PathPlannerAuto source) {
+    final autoNames = _autos.map((auto) => auto.name).toSet();
+    final newName = _uniqueCopyName(source.name, autoNames);
+
+    try {
+      final copiedAuto = source.duplicate(newName);
+      copiedAuto.folder = source.folder;
+      copiedAuto.saveFile();
+
+      setState(() {
+        _autos.add(copiedAuto);
+        _sortAutos(_autoSortValue);
+      });
+
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadAuto(copiedAuto);
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text('Duplicated auto "$newName.auto"'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      _showSaveAsError(this.context, err.toString());
+    }
+  }
+
   Widget _buildPathCard(int i, BuildContext context) {
     final pathCard = ProjectItemCard(
       name: _paths[i].name,
@@ -1076,21 +1470,8 @@ class _ProjectPageState extends State<ProjectPage> {
       warningMessage: _paths[i].hasEmptyNamedCommand()
           ? 'Contains a NamedCommand that does not have a command selected'
           : null,
-      onDuplicated: () {
-        List<String> pathNames = [];
-        for (PathPlannerPath path in _paths) {
-          pathNames.add(path.name);
-        }
-        String pathName = 'Copy of ${_paths[i].name}';
-        while (pathNames.contains(pathName)) {
-          pathName = 'Copy of $pathName';
-        }
-
-        setState(() {
-          _paths.add(_paths[i].duplicate(pathName));
-          _sortPaths(_pathSortValue);
-        });
-      },
+      onDuplicated: () => _duplicatePath(_paths[i]),
+      onSaveAs: () => _saveAsPath(_paths[i], context),
       onDeleted: () {
         _paths[i].deletePath();
         setState(() {
@@ -1249,8 +1630,7 @@ class _ProjectPageState extends State<ProjectPage> {
     }
 
     if (pathNames.contains(newName)) {
-      showDialog(
-          context: context,
+      showDialog(context: this.context,
           builder: (BuildContext context) {
             ColorScheme colorScheme = Theme.of(context).colorScheme;
             return AlertDialog(
@@ -1499,8 +1879,7 @@ class _ProjectPageState extends State<ProjectPage> {
                                                       _autoFolders[i]) {
                                                     if (_autoFolders
                                                         .contains(newName)) {
-                                                      showDialog(
-                                                          context: context,
+                                                      showDialog(context: this.context,
                                                           builder: (BuildContext
                                                               context) {
                                                             ColorScheme
@@ -1623,21 +2002,8 @@ class _ProjectPageState extends State<ProjectPage> {
                   in _getPathsFromNames(_autos[i].getAllPathNames()))
                 path.pathPositions,
             ],
-      onDuplicated: () {
-        List<String> autoNames = [];
-        for (PathPlannerAuto auto in _autos) {
-          autoNames.add(auto.name);
-        }
-        String autoName = 'Copy of ${_autos[i].name}';
-        while (autoNames.contains(autoName)) {
-          autoName = 'Copy of $autoName';
-        }
-
-        setState(() {
-          _autos.add(_autos[i].duplicate(autoName));
-          _sortAutos(_autoSortValue);
-        });
-      },
+      onDuplicated: () => _duplicateAuto(_autos[i]),
+      onSaveAs: () => _saveAsAuto(_autos[i], context),
       onDeleted: () {
         _autos[i].delete();
         setState(() {
@@ -1663,7 +2029,20 @@ class _ProjectPageState extends State<ProjectPage> {
               shortcuts: widget.shortcuts,
               telemetry: widget.telemetry,
               hotReload: widget.hotReload,
-            ),
+                                  pathDir: _pathsDirectory.path,
+                      onAutoSaved: () {
+                        if (mounted) {
+                          setState(() {
+                            _sortAutos(_autoSortValue);
+                          });
+                        }
+                      },
+                      onPathsChanged: () {
+                        if (mounted) {
+                          _load();
+                        }
+                      },
+),
           ),
         );
         setState(() {
@@ -1803,12 +2182,7 @@ class _ProjectPageState extends State<ProjectPage> {
                 );
               },
             ),
-            const SizedBox(width: 8),
-            _buildAddButton(
-              isPathsView: isPathsView,
-              onAddItem: onAddItem,
-            ),
-            const SizedBox(width: 8),
+            const SizedBox(width: 8), if (!isPathsView) _buildAutoStudioButton(), if (!isPathsView) const SizedBox(width: 8), _buildAddButton( isPathsView: isPathsView, onAddItem: onAddItem, ), const SizedBox(width: 8),
           ],
         ),
         const SizedBox(height: 10),
@@ -1888,6 +2262,91 @@ class _ProjectPageState extends State<ProjectPage> {
           onDeleteFolder();
         }
       },
+    );
+  }
+
+  void _openAutoStudio() {
+    final auto = _createNewBattlecryAuto();
+    auto.saveFile();
+
+    Navigator.of(this.context)
+        .push(MaterialPageRoute(
+      builder: (context) => AutoStudioPage(
+        prefs: widget.prefs,
+        auto: auto,
+        allPaths: _paths,
+        allChoreoPaths: _choreoPaths,
+        allPathNames: [
+          for (final path in _paths) path.name,
+          for (final path in _choreoPaths) path.name,
+        ],
+                pathDir: _pathsDirectory.path,
+fieldImage: widget.fieldImage,
+        undoStack: widget.undoStack,
+        telemetry: widget.telemetry,
+        hotReload: widget.hotReload,
+        onRenamed: (value) {
+          final autoIdx = _autos.indexWhere((item) => identical(item, auto));
+          if (autoIdx >= 0) {
+            _renameAuto(autoIdx, value, this.context);
+          }
+        },
+        onAutoSaved: () {
+          if (mounted) {
+            setState(() {
+              _sortAutos(_autoSortValue);
+            });
+          }
+        },
+        onPathsChanged: () {
+          if (mounted) {
+            _load();
+          }
+        },
+      ),
+    ))
+        .then((value) {
+      widget.undoStack.clearHistory();
+      if (mounted) {
+        _load();
+      }
+    });
+  }
+
+  PathPlannerAuto _createNewBattlecryAuto() {
+    final autoNames = <String>[];
+    for (final auto in _autos) {
+      autoNames.add(auto.name);
+    }
+
+    var autoName = 'New Battlecry Auto';
+    var copyIndex = 2;
+    while (autoNames.contains(autoName)) {
+      autoName = 'New Battlecry Auto $copyIndex';
+      copyIndex++;
+    }
+
+    final auto = PathPlannerAuto.defaultAuto(
+      autoDir: _autosDirectory.path,
+      name: autoName,
+      fs: fs,
+      folder: _autoFolder,
+      choreoAuto: false,
+    );
+
+    setState(() {
+      _autos.add(auto);
+      _sortAutos(_autoSortValue);
+    });
+
+    return auto;
+  }
+
+  Widget _buildAutoStudioButton() {
+    return IconButton.filledTonal(
+      tooltip: 'Open Battlecry Auto Studio',
+      icon: const Icon(Icons.auto_awesome_motion_rounded),
+      onPressed: _openAutoStudio,
     );
   }
 
@@ -2024,8 +2483,7 @@ class _ProjectPageState extends State<ProjectPage> {
     }
 
     if (autoNames.contains(newName)) {
-      showDialog(
-          context: context,
+      showDialog(context: this.context,
           builder: (BuildContext context) {
             ColorScheme colorScheme = Theme.of(context).colorScheme;
             return AlertDialog(

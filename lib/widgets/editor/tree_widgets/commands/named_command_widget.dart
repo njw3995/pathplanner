@@ -47,7 +47,8 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
             Expanded(
               child: DropdownButtonHideUnderline(
                 child: DropdownButton2<String>(
-                  hint: const Text('Command Name'),
+                  isExpanded: true,
+                  hint: const Text('Command Name', overflow: TextOverflow.ellipsis),
                   value: widget.command.name,
                   items: ProjectPage.events.isEmpty
                       ? [
@@ -61,6 +62,7 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
                                 fontWeight: FontWeight.normal,
                                 color: colorScheme.onSurface,
                               ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ]
@@ -75,6 +77,7 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
                                     fontWeight: FontWeight.normal,
                                     color: colorScheme.onSurface,
                                   ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                         ],
