@@ -22,6 +22,8 @@ class FieldImage {
   late String name;
   late final bool isCustom;
   late final String extension;
+  String? assetPath;
+  String? filePath;
 
   static List<FieldImage>? _officialFields;
 
@@ -114,6 +116,8 @@ class FieldImage {
   }
 
   FieldImage.custom(File imageFile) {
+    assetPath = null;
+    filePath = imageFile.path;
     image = Image.file(
       imageFile,
       fit: BoxFit.contain,

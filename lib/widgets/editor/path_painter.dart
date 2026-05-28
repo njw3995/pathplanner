@@ -1,3 +1,4 @@
+import 'package:pathplanner/collab/ghost_overlay.dart';
 import 'dart:convert';
 import 'dart:math';
 import 'dart:ui';
@@ -22,6 +23,8 @@ class PathPainter extends CustomPainter {
   final List<PathPlannerPath> paths;
   final List<ChoreoPath> choreoPaths;
   final FieldImage fieldImage;
+  final List<Map<String, dynamic>> collabMarkups;
+  final List<Map<String, dynamic>> collabTeamAutos;
   final bool simple;
   final bool hideOtherPathsOnHover;
   final String? hoveredPath;
@@ -36,6 +39,9 @@ class PathPainter extends CustomPainter {
   final int? hoveredMarker;
   final int? selectedMarker;
   final PathPlannerTrajectory? simulatedPath;
+  final List<GhostAutoOverlay> ghostOverlays;
+  final List<GhostAutoPauseBlock> mainTimingPauses;
+  final num? previewTotalTimeSeconds;
   final SharedPreferences prefs;
   final PathPlannerPath? optimizedPath;
 
@@ -51,6 +57,8 @@ class PathPainter extends CustomPainter {
     required this.paths,
     this.choreoPaths = const [],
     required this.fieldImage,
+    this.collabMarkups = const [],
+    this.collabTeamAutos = const [],
     this.simple = false,
     this.hideOtherPathsOnHover = false,
     this.hoveredPath,
@@ -65,6 +73,9 @@ class PathPainter extends CustomPainter {
     this.hoveredMarker,
     this.selectedMarker,
     this.simulatedPath,
+    this.ghostOverlays = const [],
+    this.mainTimingPauses = const [],
+    this.previewTotalTimeSeconds,
     Animation<double>? animation,
     required this.prefs,
     this.optimizedPath,
@@ -85,10 +96,24 @@ class PathPainter extends CustomPainter {
     }
 
     if (simulatedPath != null && animation != null) {
-      previewTime =
-          Tween<num>(begin: 0, end: simulatedPath!.states.last.timeSeconds)
-              .animate(animation);
+      previewTime = animation;
     }
+  }
+
+  double _currentPreviewSeconds() {
+    final totalSeconds = (previewTotalTimeSeconds ??
+            simulatedPath?.states.last.timeSeconds ??
+            0.0)
+        .toDouble();
+
+    if (previewTime == null || !totalSeconds.isFinite || totalSeconds <= 0.0) {
+      return 0.0;
+    }
+
+    return (previewTime!.value.toDouble() * totalSeconds).clamp(
+      0.0,
+      totalSeconds,
+    );
   }
 
   @override
@@ -97,6 +122,8 @@ class PathPainter extends CustomPainter {
 
     _paintGrid(
         canvas, size, prefs.getBool(PrefsKeys.showGrid) ?? Defaults.showGrid);
+    _paintCollabMarkups(canvas, size);
+    _paintCollabTeamAutos(canvas, size);
 
     for (int i = 0; i < paths.length; i++) {
       if (hideOtherPathsOnHover &&
@@ -184,12 +211,18 @@ class PathPainter extends CustomPainter {
       }
     }
 
-    if (prefs.getBool(PrefsKeys.showStates) ?? Defaults.showStates) {
+    _paintGhostOverlays(canvas); if (prefs.getBool(PrefsKeys.showStates) ?? Defaults.showStates) {
       _paintTrajectoryStates(simulatedPath, canvas);
     }
 
     if (previewTime != null) {
-      TrajectoryState state = simulatedPath!.sample(previewTime!.value);
+      final mainPreviewTime = timelineSecondsToTrajectorySeconds(
+        timelineSeconds: _currentPreviewSeconds(),
+        trajectoryDurationSeconds:
+            simulatedPath!.states.last.timeSeconds.toDouble(),
+        pauses: mainTimingPauses,
+      );
+      TrajectoryState state = simulatedPath!.sample(mainPreviewTime);
       Rotation2d rotation = state.pose.rotation;
 
       if (robotConfig.holonomic && state.moduleStates.isNotEmpty) {
@@ -234,9 +267,238 @@ class PathPainter extends CustomPainter {
     }
   }
 
+  void _paintCollabMarkups(Canvas canvas, Size size) {
+    if (collabMarkups.isEmpty) {
+      return;
+    }
+
+    for (final entity in collabMarkups) {
+      final rawPoints = entity['points'];
+      if (rawPoints is! List || rawPoints.length < 2) {
+        continue;
+      }
+
+      final path = Path();
+      var started = false;
+
+      for (final rawPoint in rawPoints) {
+        if (rawPoint is! Map) {
+          continue;
+        }
+
+        final rawX = rawPoint['x'];
+        final rawY = rawPoint['y'];
+
+        if (rawX is! num || rawY is! num) {
+          continue;
+        }
+
+        final offset = Offset(
+          rawX.toDouble().clamp(0.0, 1.0) * size.width,
+          rawY.toDouble().clamp(0.0, 1.0) * size.height,
+        );
+
+        if (!started) {
+          path.moveTo(offset.dx, offset.dy);
+          started = true;
+        } else {
+          path.lineTo(offset.dx, offset.dy);
+        }
+      }
+
+      if (!started) {
+        continue;
+      }
+
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = _readCollabMarkupWidth(entity)
+        ..color = _readCollabMarkupColor(entity).withAlpha(225);
+
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  double _readCollabMarkupWidth(Map<String, dynamic> entity) {
+    final width = entity['width'];
+    if (width is num) {
+      return width.toDouble().clamp(1.0, 16.0);
+    }
+
+    return 5.0;
+  }
+
+  Color _readCollabMarkupColor(Map<String, dynamic> entity) {
+    final raw = entity['color'];
+    if (raw is! String || !raw.startsWith('#')) {
+      return const Color(0xFFFF4FD8);
+    }
+
+    final hex = raw.substring(1);
+    try {
+      if (hex.length == 6) {
+        return Color(0xFF000000 | int.parse(hex, radix: 16));
+      }
+
+      if (hex.length == 8) {
+        return Color(int.parse(hex, radix: 16));
+      }
+    } catch (_) {
+      return const Color(0xFFFF4FD8);
+    }
+
+    return const Color(0xFFFF4FD8);
+  }
+
+  void _paintCollabTeamAutos(Canvas canvas, Size size) {
+    if (collabTeamAutos.isEmpty) {
+      return;
+    }
+
+    for (final teamAuto in collabTeamAutos) {
+      final auto = teamAuto['auto'];
+      if (auto is! Map) {
+        continue;
+      }
+
+      final samples = auto['samples'];
+      if (samples is! List || samples.length < 2) {
+        continue;
+      }
+
+      final path = Path();
+      var started = false;
+
+      for (final sampleRaw in samples) {
+        if (sampleRaw is! Map) {
+          continue;
+        }
+
+        final xRaw = sampleRaw['x'];
+        final yRaw = sampleRaw['y'];
+        if (xRaw is! num || yRaw is! num) {
+          continue;
+        }
+
+        final offset = Offset(
+          xRaw.toDouble().clamp(0.0, 1.0) * size.width,
+          yRaw.toDouble().clamp(0.0, 1.0) * size.height,
+        );
+
+        if (!started) {
+          path.moveTo(offset.dx, offset.dy);
+          started = true;
+        } else {
+          path.lineTo(offset.dx, offset.dy);
+        }
+      }
+
+      if (!started) {
+        continue;
+      }
+
+      final color = _readCollabColorValue(teamAuto['color']).withAlpha(210);
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = 3.0
+        ..color = color;
+
+      canvas.drawPath(path, paint);
+    }
+  }
+
+  Color _readCollabColorValue(Object? raw) {
+    if (raw is! String || !raw.startsWith('#')) {
+      return const Color(0xFFFF4FD8);
+    }
+
+    final hex = raw.substring(1);
+    try {
+      if (hex.length == 6) {
+        return Color(0xFF000000 | int.parse(hex, radix: 16));
+      }
+
+      if (hex.length == 8) {
+        return Color(int.parse(hex, radix: 16));
+      }
+    } catch (_) {
+      return const Color(0xFFFF4FD8);
+    }
+
+    return const Color(0xFFFF4FD8);
+  }
+
   @override
   bool shouldRepaint(PathPainter oldDelegate) {
-    return true; // This will just be repainted all the time anyways from the animation
+    return oldDelegate.collabTeamAutos != collabTeamAutos ||
+        true; // This will just be repainted all the time anyways from the animation
+  }
+
+  void _paintGhostOverlays(Canvas canvas) {
+    for (final ghost in ghostOverlays) {
+      if (!ghost.visible || ghost.trajectory.states.isEmpty) {
+        continue;
+      }
+
+      final paint = Paint()
+        ..style = PaintingStyle.stroke
+        ..color = ghost.color.withAlpha(170)
+        ..strokeWidth = 4.0;
+
+      final path = Path();
+      final start = PathPainterUtil.pointToPixelOffset(
+        ghost.trajectory.states.first.pose.translation,
+        scale,
+        fieldImage,
+      );
+      path.moveTo(start.dx, start.dy);
+
+      for (int i = 1; i < ghost.trajectory.states.length; i++) {
+        final pos = PathPainterUtil.pointToPixelOffset(
+          ghost.trajectory.states[i].pose.translation,
+          scale,
+          fieldImage,
+        );
+        path.lineTo(pos.dx, pos.dy);
+      }
+
+      canvas.drawPath(path, paint);
+
+      final markerPaint = Paint()
+        ..style = PaintingStyle.fill
+        ..color = ghost.color.withAlpha(220);
+
+      canvas.drawCircle(start, 7.0, markerPaint);
+
+      final end = PathPainterUtil.pointToPixelOffset(
+        ghost.trajectory.states.last.pose.translation,
+        scale,
+        fieldImage,
+      );
+      markerPaint.color = ghost.color.withAlpha(150);
+      canvas.drawCircle(end, 7.0, markerPaint);
+
+      if (previewTime != null) {
+        final ghostTime = ghost.trajectoryTimeForPreview(_currentPreviewSeconds());
+        final state = ghost.trajectory.sample(ghostTime);
+        PathPainterUtil.paintRobotOutline(
+          state.pose,
+          fieldImage,
+          robotConfig.bumperSize,
+          robotConfig.bumperOffset,
+          scale,
+          canvas,
+          ghost.color.withAlpha(160),
+          colorScheme.surfaceContainer.withAlpha(190),
+          robotFeatures,
+          showDetails: false,
+        );
+      }
+    }
   }
 
   void _paintTrajectoryStates(PathPlannerTrajectory? traj, Canvas canvas) {

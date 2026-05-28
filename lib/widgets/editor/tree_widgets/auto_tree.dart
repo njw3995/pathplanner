@@ -16,6 +16,8 @@ class AutoTree extends StatefulWidget {
   final Function(String?)? onEditPathPressed;
   final VoidCallback? onRenderAuto;
   final VoidCallback? onImportAutoToStudio;
+  final VoidCallback? onManageGhostOverlays;
+  final int ghostOverlayCount;
 
   const AutoTree({
     super.key,
@@ -29,6 +31,8 @@ class AutoTree extends StatefulWidget {
     this.onEditPathPressed,
     this.onRenderAuto,
     this.onImportAutoToStudio,
+    this.onManageGhostOverlays,
+    this.ghostOverlayCount = 0,
   });
 
   @override
@@ -56,6 +60,18 @@ class _AutoTreeState extends State<AutoTree> {
               ),
               Row(
                 children: [
+                  Tooltip(
+                    message: 'Ghost Overlays (${widget.ghostOverlayCount})',
+                    waitDuration: const Duration(milliseconds: 500),
+                    child: IconButton(
+                      onPressed: widget.onManageGhostOverlays,
+                      icon: Icon(
+                        widget.ghostOverlayCount > 0
+                            ? Icons.layers
+                            : Icons.layers_outlined,
+                      ),
+                    ),
+                  ),
                   Tooltip(
                     message: 'Export Auto to Image',
                     waitDuration: const Duration(milliseconds: 500),
