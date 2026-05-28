@@ -58,3 +58,9 @@ windows/flutter/generated_plugins.cmake
 *.bak.*
 *.orig
 *.rej
+
+installer/Output/
+*.exe
+*.msix
+*.pfx
+*.p12

@@ -1,0 +1,14 @@
+# Flutter/Dart generated files
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+
+# Local Windows installer output
+installer/Output/
+
+# Never commit signing certs or local secrets
+*.pfx
+*.p12

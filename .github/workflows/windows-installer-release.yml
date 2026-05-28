@@ -1,0 +1,125 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer version, for example 2026.0.0"
+        required: true
+        default: "2026.0.0"
+      create_release:
+        description: "Create or update a GitHub Release"
+        required: true
+        type: boolean
+        default: false
+
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}" -replace '^v', ''
+            $createRelease = "true"
+            $releaseTag = "${{ github.ref_name }}"
+          } else {
+            $version = "${{ github.event.inputs.version }}"
+            $createRelease = "${{ github.event.inputs.create_release }}"
+            $releaseTag = "v$version"
+          }
+
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Version is empty"
+          }
+
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CREATE_RELEASE=$createRelease" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "Version: $version"
+          Write-Host "Create Release: $createRelease"
+          Write-Host "Release Tag: $releaseTag"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Enable Windows desktop
+        run: flutter config --enable-windows-desktop
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+
+      - name: Build Windows release app
+        run: flutter build windows --release
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --yes --no-progress
+
+          $candidateDirs = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6",
+            "${env:ProgramFiles}\Inno Setup 6"
+          )
+
+          foreach ($dir in $candidateDirs) {
+            $iscc = Join-Path $dir "ISCC.exe"
+            if (Test-Path $iscc) {
+              $dir | Out-File -FilePath $env:GITHUB_PATH -Append
+              Write-Host "Found Inno Setup: $iscc"
+              exit 0
+            }
+          }
+
+          throw "Could not find ISCC.exe after installing Inno Setup"
+
+      - name: Build installer
+        run: |
+          powershell -ExecutionPolicy Bypass -File .\installer\build_installer.ps1 -Version $env:APP_VERSION -SkipFlutterBuild
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PathPlanner-AutoStudio-Setup-${{ env.APP_VERSION }}
+          path: installer/Output/PathPlanner-AutoStudio-Setup-${{ env.APP_VERSION }}.exe
+          if-no-files-found: error
+
+      - name: Create or update GitHub Release
+        if: env.CREATE_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $installer = "installer/Output/PathPlanner-AutoStudio-Setup-$env:APP_VERSION.exe"
+          if (-not (Test-Path $installer)) {
+            throw "Installer not found: $installer"
+          }
+
+          gh release view $env:RELEASE_TAG *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release exists. Uploading installer with clobber..."
+            gh release upload $env:RELEASE_TAG $installer --clobber
+          } else {
+            Write-Host "Creating release $env:RELEASE_TAG..."
+            gh release create $env:RELEASE_TAG $installer `
+              --target "${{ github.sha }}" `
+              --title "PathPlanner AutoStudio $env:APP_VERSION" `
+              --notes "Windows installer for PathPlanner AutoStudio $env:APP_VERSION."
+          }
