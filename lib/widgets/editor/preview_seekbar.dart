@@ -32,7 +32,8 @@ class _PreviewSeekbarState extends State<PreviewSeekbar> {
     }
 
     final rawTime = widget.previewController.value * totalTime;
-    if (widget.previewController.value >= 0.999999 && totalTime > _endSampleBackoffSeconds) {
+    if (widget.previewController.value >= 0.999999 &&
+        totalTime > _endSampleBackoffSeconds) {
       return totalTime - _endSampleBackoffSeconds;
     }
 
@@ -163,7 +164,8 @@ class _PreviewSeekbarState extends State<PreviewSeekbar> {
     print('  ${sampleFile.path}');
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
     }
   }
 
@@ -206,7 +208,8 @@ class _PreviewSeekbarState extends State<PreviewSeekbar> {
                         : const Icon(Icons.play_arrow),
                   ),
                   visualDensity: VisualDensity.compact,
-                  tooltip: widget.previewController.isAnimating ? 'Pause' : 'Play',
+                  tooltip:
+                      widget.previewController.isAnimating ? 'Pause' : 'Play',
                 ),
                 IconButton(
                   onPressed: () {
@@ -238,7 +241,8 @@ class _PreviewSeekbarState extends State<PreviewSeekbar> {
                         ),
                         child: Slider(
                           value: widget.previewController.value,
-                          label: (widget.previewController.value * widget.totalPathTime)
+                          label: (widget.previewController.value *
+                                  widget.totalPathTime)
                               .toStringAsFixed(2),
                           onChanged: (value) {
                             if (widget.previewController.isAnimating) {

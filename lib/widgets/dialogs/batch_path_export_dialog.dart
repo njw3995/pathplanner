@@ -56,7 +56,8 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
   @override
   void initState() {
     super.initState();
-    final teamColor = widget.prefs.getInt(PrefsKeys.teamColor) ?? Defaults.teamColor;
+    final teamColor =
+        widget.prefs.getInt(PrefsKeys.teamColor) ?? Defaults.teamColor;
     _darkTheme = ThemeData(
       useMaterial3: true,
       colorSchemeSeed: Color(teamColor),
@@ -89,7 +90,9 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
                 child: WidgetsToImage(
                   controller: _controller,
                   child: Container(
-                    color: _solidBackground ? _darkTheme.colorScheme.surface : null,
+                    color: _solidBackground
+                        ? _darkTheme.colorScheme.surface
+                        : null,
                     child: Theme(
                       data: _darkTheme,
                       child: _activeTrajectory == null
@@ -129,9 +132,8 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
           label: const Text('Dark Transparent PNGs'),
         ),
         FilledButton.tonalIcon(
-          onPressed: _exporting
-              ? null
-              : () => _export(BatchPathExportMode.darkGif),
+          onPressed:
+              _exporting ? null : () => _export(BatchPathExportMode.darkGif),
           icon: const Icon(Icons.movie_creation_outlined),
           label: const Text('Dark GIFs'),
         ),
@@ -146,7 +148,8 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
     );
   }
 
-  ({PathPlannerTrajectory? trajectory, String? error}) _createTrajectory(PathPlannerPath path) {
+  ({PathPlannerTrajectory? trajectory, String? error}) _createTrajectory(
+      PathPlannerPath path) {
     try {
       return (
         trajectory: PathPlannerTrajectory(
@@ -178,8 +181,12 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
     final failures = <String>[];
     final exported = <Map<String, String>>[];
     final paths = [...widget.paths]..sort((a, b) => a.name.compareTo(b.name));
-    final gifDir = mode == BatchPathExportMode.viewerAssets ? Directory(p.join(outputDir, 'gifs')) : Directory(outputDir);
-    final overlayDir = mode == BatchPathExportMode.viewerAssets ? Directory(p.join(outputDir, 'overlays')) : Directory(outputDir);
+    final gifDir = mode == BatchPathExportMode.viewerAssets
+        ? Directory(p.join(outputDir, 'gifs'))
+        : Directory(outputDir);
+    final overlayDir = mode == BatchPathExportMode.viewerAssets
+        ? Directory(p.join(outputDir, 'overlays'))
+        : Directory(outputDir);
 
     if (mode == BatchPathExportMode.viewerAssets) {
       await gifDir.create(recursive: true);
@@ -204,7 +211,8 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
       final stem = _safeFileName(path.name);
       final entry = <String, String>{'name': path.name};
 
-      if (mode == BatchPathExportMode.darkGif || mode == BatchPathExportMode.viewerAssets) {
+      if (mode == BatchPathExportMode.darkGif ||
+          mode == BatchPathExportMode.viewerAssets) {
         try {
           _showFieldImage = true;
           _solidBackground = true;
@@ -218,7 +226,8 @@ class _BatchPathExportDialogState extends State<BatchPathExportDialog> {
         }
       }
 
-      if (mode == BatchPathExportMode.darkTransparentPng || mode == BatchPathExportMode.viewerAssets) {
+      if (mode == BatchPathExportMode.darkTransparentPng ||
+          mode == BatchPathExportMode.viewerAssets) {
         try {
           _showFieldImage = false;
           _solidBackground = false;

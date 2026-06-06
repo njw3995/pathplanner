@@ -121,7 +121,6 @@ class BattlecryAutoGenerator {
           hub: pass.hub,
         );
         commands.addAll([
-          _named(namedPrepare),
           _path(first.start),
           _path(first.sweep),
           _path(first.returnPath),
@@ -160,7 +159,9 @@ class BattlecryAutoGenerator {
       return _result(commands, warnings);
     }
 
-    if (spec.passes.length == 1 && finalSpec?.type == 'dot') {
+    if (spec.passes.length == 1 &&
+        finalSpec?.type == 'dot' &&
+        finalSpec?.sweepBeforeDot != true) {
       final dot = _normalizeDot(finalSpec?.dot ?? 'center');
       commands.addAll([
         _named(namedTunableWait),
@@ -212,10 +213,8 @@ class BattlecryAutoGenerator {
         );
         final sweep = parseChainLabel(_chainFromPass(finalPassAsPass));
         commands.addAll([
-          _named(namedPrepare),
           _named(namedSetCoast),
           for (final pathName in sweep.paths) _path(pathName),
-          _named(namedStopIntake),
         ]);
       }
     }
@@ -229,7 +228,6 @@ class BattlecryAutoGenerator {
   }) {
     final sweep = parseChainLabel(_chainFromPass(pass));
     return [
-      _named(namedPrepare),
       if (includePassStart) _path('Pass_Start'),
       for (final pathName in sweep.paths) _path(pathName),
       for (final pathName in returnPathsForSecond(
@@ -250,6 +248,14 @@ class BattlecryAutoGenerator {
     }
 
     if (finalSpec.type == 'dot') {
+      if (finalSpec.sweepBeforeDot) {
+        commands.addAll(_sweepBeforeDotCommands(
+          finalSpec: finalSpec,
+          includePassStart: finalSpec.passOption,
+        ));
+        return;
+      }
+
       final dot = _normalizeDot(finalSpec.dot);
       if (shotCount > 0) {
         commands.add(_path(dotPaths[dot]!));
@@ -270,12 +276,50 @@ class BattlecryAutoGenerator {
     );
     final sweep = parseChainLabel(_chainFromPass(finalPassAsPass));
     commands.addAll([
-      _named(namedPrepare),
       _path('Pass_Start'),
       _named(namedSetCoast),
       for (final pathName in sweep.paths) _path(pathName),
-      _named(namedStopIntake),
     ]);
+  }
+
+  static List<Command> _sweepBeforeDotCommands({
+    required BattlecryFinalSpec finalSpec,
+    required bool includePassStart,
+  }) {
+    final paths = _sweepBeforeDotPathNames(finalSpec);
+    return [
+      if (includePassStart) _path('Pass_Start'),
+      _named(namedSetCoast),
+      for (final pathName in paths) _path(pathName),
+    ];
+  }
+
+  static List<String> _sweepBeforeDotPathNames(BattlecryFinalSpec finalSpec) {
+    final dot = _normalizeDot(finalSpec.dot);
+    final dotSuffix = dot == 'close' ? 'CloseDot' : 'CenterDot';
+
+    if (finalSpec.fullSweepBeforeDot) {
+      final pass = BattlecryPassSpec(
+        risky: finalSpec.risky,
+        greedy: finalSpec.greedy,
+        hub: finalSpec.hub,
+        route: finalSpec.route,
+      );
+      final sweep = parseChainLabel(_chainFromPass(pass));
+      return [
+        ...sweep.paths,
+        '${sweep.endToken}-$dotSuffix',
+      ];
+    }
+
+    final halfToken = finalSpec.halfSweep == 'far'
+        ? (finalSpec.risky ? 'RiskA' : 'FarA')
+        : (finalSpec.hub ? 'CloseA' : 'MidA');
+
+    return [
+      aSweepPaths[halfToken]!,
+      '$halfToken-$dotSuffix',
+    ];
   }
 
   static BattlecryAutoImportResult parseExistingAuto(
@@ -415,8 +459,7 @@ class BattlecryAutoGenerator {
             ? _commandPathName(commands[index + 1], pathCopyMap)
             : null;
 
-        if (nextPath == 'Pass1_Safe_Start' ||
-            nextPath == 'Pass1_Risk_Start') {
+        if (nextPath == 'Pass1_Safe_Start' || nextPath == 'Pass1_Risk_Start') {
           if (index + 5 >= commands.length) {
             throw StateError('first pass is incomplete');
           }
@@ -618,7 +661,8 @@ class BattlecryAutoGenerator {
 
     final parsed = _parseChainFromPaths(sweepPaths);
 
-    if (index < commands.length && _commandNamed(commands[index], namedStopIntake)) {
+    if (index < commands.length &&
+        _commandNamed(commands[index], namedStopIntake)) {
       index++;
     }
 
@@ -670,9 +714,8 @@ class BattlecryAutoGenerator {
       );
     }
 
-    final match =
-        RegExp(r'^(MidA|CloseA|FarA|RiskA)-(MidB|CloseB|FarB|RiskB)$')
-            .firstMatch(cleanLabel);
+    final match = RegExp(r'^(MidA|CloseA|FarA|RiskA)-(MidB|CloseB|FarB|RiskB)$')
+        .firstMatch(cleanLabel);
     if (match == null) {
       throw ArgumentError(
         'Could not parse sweep chain "$label". Use MidA, RiskA, MidA-RiskB, Greedy_MidA-RiskB, etc.',
@@ -683,8 +726,9 @@ class BattlecryAutoGenerator {
     final bToken = match.group(2)!;
     final connector =
         explicitGreedy ? 'Greedy_$aToken-$bToken' : '$aToken-$bToken';
-    final bPath =
-        explicitGreedy ? 'Greedy_${bSweepPaths[bToken]!}' : bSweepPaths[bToken]!;
+    final bPath = explicitGreedy
+        ? 'Greedy_${bSweepPaths[bToken]!}'
+        : bSweepPaths[bToken]!;
 
     return SweepChain(
       '${explicitGreedy ? "Greedy " : ""}$aToken-$bToken',
@@ -829,7 +873,8 @@ class BattlecryAutoGenerator {
     };
     final invB = <String, String>{
       for (final entry in bSweepPaths.entries) entry.value: entry.key,
-      for (final entry in bSweepPaths.entries) 'Greedy_${entry.value}': entry.key,
+      for (final entry in bSweepPaths.entries)
+        'Greedy_${entry.value}': entry.key,
     };
 
     final aToken = invA[paths.first];
@@ -862,12 +907,12 @@ class BattlecryAutoGenerator {
 
     final greedy =
         connector.startsWith('Greedy_') || paths[2].startsWith('Greedy_');
-    final cleanConnector =
-        connector.startsWith('Greedy_') ? connector.substring('Greedy_'.length) : connector;
+    final cleanConnector = connector.startsWith('Greedy_')
+        ? connector.substring('Greedy_'.length)
+        : connector;
 
-    final match =
-        RegExp(r'^(MidA|CloseA|FarA|RiskA)-(MidB|CloseB|FarB|RiskB)$')
-            .firstMatch(cleanConnector);
+    final match = RegExp(r'^(MidA|CloseA|FarA|RiskA)-(MidB|CloseB|FarB|RiskB)$')
+        .firstMatch(cleanConnector);
     if (match == null) {
       throw StateError('could not parse connector $connector');
     }
@@ -984,6 +1029,15 @@ class BattlecryAutoGenerator {
       for (final bToken in bSweepPaths.keys) {
         known.add('$aToken-$bToken');
         known.add('Greedy_$aToken-$bToken');
+      }
+    }
+
+    for (final token in [
+      ...aSweepPaths.keys,
+      ...bSweepPaths.keys,
+    ]) {
+      for (final dotSuffix in ['CloseDot', 'CenterDot']) {
+        known.add('$token-$dotSuffix');
       }
     }
 

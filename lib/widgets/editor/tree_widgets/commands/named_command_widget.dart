@@ -26,6 +26,39 @@ class NamedCommandWidget extends StatefulWidget {
 }
 
 class _NamedCommandWidgetState extends State<NamedCommandWidget> {
+  List<String> _dropdownOptions(
+    Iterable<String> sourceOptions,
+    String? selectedValue,
+  ) {
+    final options = <String>{};
+
+    for (final option in sourceOptions) {
+      final trimmed = option.trim();
+      if (trimmed.isNotEmpty) {
+        options.add(trimmed);
+      }
+    }
+
+    final selected = selectedValue?.trim();
+    if (selected != null && selected.isNotEmpty) {
+      options.add(selected);
+    }
+
+    return options.toList()..sort();
+  }
+
+  String? _dropdownValue(
+    Iterable<String> options,
+    String? selectedValue,
+  ) {
+    final selected = selectedValue?.trim();
+    if (selected == null || selected.isEmpty) {
+      return null;
+    }
+
+    return options.contains(selected) ? selected : null;
+  }
+
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
 
@@ -34,6 +67,47 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
     _controller.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  List<String> _dedupedNamedCommands() {
+    final seen = <String>{};
+    final commands = <String>[];
+
+    for (final command in _dedupedNamedCommands()) {
+      if (seen.add(command)) {
+        commands.add(command);
+      }
+    }
+
+    return commands;
+  }
+
+  @override
+  List<DropdownMenuItem<String>> _dedupeNamedCommandDropdownItems(
+    List<DropdownMenuItem<String>> items,
+    dynamic currentValue,
+  ) {
+    final seen = <String>{};
+    final deduped = <DropdownMenuItem<String>>[];
+
+    for (final item in items) {
+      final value = item.value;
+      if (value == null || seen.add(value)) {
+        deduped.add(item);
+      }
+    }
+
+    final current = currentValue?.toString();
+    if (current != null && current.isNotEmpty && seen.add(current)) {
+      deduped.add(
+        DropdownMenuItem<String>(
+          value: current,
+          child: Text(current),
+        ),
+      );
+    }
+
+    return deduped;
   }
 
   @override
@@ -48,31 +122,18 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
               child: DropdownButtonHideUnderline(
                 child: DropdownButton2<String>(
                   isExpanded: true,
-                  hint: const Text('Command Name', overflow: TextOverflow.ellipsis),
+                  hint: const Text('Command Name',
+                      overflow: TextOverflow.ellipsis),
                   value: widget.command.name,
-                  items: ProjectPage.events.isEmpty
-                      ? [
-                          // Workaround to prevent menu from disabling itself with empty items list
-                          DropdownMenuItem(
-                            value: '',
-                            enabled: false,
-                            child: Text(
-                              '',
-                              style: TextStyle(
-                                fontWeight: FontWeight.normal,
-                                color: colorScheme.onSurface,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ]
-                      : [
-                          for (String event in ProjectPage.events)
-                            if (event.isNotEmpty)
+                  items: _dedupeNamedCommandDropdownItems(
+                      ProjectPage.events.isEmpty
+                          ? [
+                              // Workaround to prevent menu from disabling itself with empty items list
                               DropdownMenuItem(
-                                value: event,
+                                value: '',
+                                enabled: false,
                                 child: Text(
-                                  event,
+                                  '',
                                   style: TextStyle(
                                     fontWeight: FontWeight.normal,
                                     color: colorScheme.onSurface,
@@ -80,7 +141,23 @@ class _NamedCommandWidgetState extends State<NamedCommandWidget> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
-                        ],
+                            ]
+                          : [
+                              for (String event in ProjectPage.events)
+                                if (event.isNotEmpty)
+                                  DropdownMenuItem(
+                                    value: event,
+                                    child: Text(
+                                      event,
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.normal,
+                                        color: colorScheme.onSurface,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                            ],
+                      widget.command.name),
                   buttonStyleData: ButtonStyleData(
                     padding: const EdgeInsets.only(right: 12),
                     decoration: BoxDecoration(

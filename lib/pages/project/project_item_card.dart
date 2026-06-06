@@ -20,6 +20,9 @@ class ProjectItemCard extends StatefulWidget {
   final String? warningMessage;
   final bool showOptions;
   final bool choreoItem;
+  final bool selectionMode;
+  final bool selected;
+  final ValueChanged<bool>? onSelectionChanged;
 
   const ProjectItemCard({
     super.key,
@@ -35,6 +38,9 @@ class ProjectItemCard extends StatefulWidget {
     this.warningMessage,
     this.showOptions = true,
     this.choreoItem = false,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onSelectionChanged,
   });
 
   @override
@@ -64,31 +70,43 @@ class _ProjectItemCardState extends State<ProjectItemCard> {
                   child: Row(
                     children: [
                       const SizedBox(width: 4),
+                      if (widget.selectionMode)
+                        SizedBox(
+                          width: widget.compact ? 34 : 42,
+                          child: Checkbox(
+                            value: widget.selected,
+                            visualDensity: VisualDensity.compact,
+                            onChanged: (value) =>
+                                widget.onSelectionChanged?.call(value ?? false),
+                          ),
+                        ),
                       Expanded(
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
                           alignment: Alignment.centerLeft,
                           child: RenamableTitle(
                             title: widget.name,
-                            textStyle: const TextStyle(fontSize: 28),
+                            textStyle: TextStyle(
+                              fontSize: widget.selectionMode ? 22 : 28,
+                            ),
                             onRename: widget.onRenamed,
                           ),
                         ),
                       ),
-                      if (widget.showOptions)
+                      if (widget.showOptions && !widget.selectionMode)
                         FittedBox(
                           child: PopupMenuButton<String>(
                             tooltip: '',
                             onSelected: (value) {
-                    if (value == 'duplicate') {
-                      widget.onDuplicated?.call();
-                    } else if (value == 'saveAs') {
-                      widget.onSaveAs?.call();
-                    } else if (value == 'delete') {
-                      widget.onDeleted?.call();
-                    }
-                  },
-                  itemBuilder: (_) {
+                              if (value == 'duplicate') {
+                                widget.onDuplicated?.call();
+                              } else if (value == 'saveAs') {
+                                widget.onSaveAs?.call();
+                              } else if (value == 'delete') {
+                                widget.onDeleted?.call();
+                              }
+                            },
+                            itemBuilder: (_) {
                               return [
                                 PopupMenuItem(
                                   value: 'duplicate',
@@ -100,7 +118,7 @@ class _ProjectItemCardState extends State<ProjectItemCard> {
                                     ],
                                   ),
                                 ),
-                                                                if (widget.onSaveAs != null)
+                                if (widget.onSaveAs != null)
                                   const PopupMenuItem(
                                     value: 'saveAs',
                                     child: Row(
@@ -111,7 +129,7 @@ class _ProjectItemCardState extends State<ProjectItemCard> {
                                       ],
                                     ),
                                   ),
-PopupMenuItem(
+                                PopupMenuItem(
                                   value: 'delete',
                                   child: Row(
                                     children: [

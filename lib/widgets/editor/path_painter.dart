@@ -211,7 +211,8 @@ class PathPainter extends CustomPainter {
       }
     }
 
-    _paintGhostOverlays(canvas); if (prefs.getBool(PrefsKeys.showStates) ?? Defaults.showStates) {
+    _paintGhostOverlays(canvas);
+    if (prefs.getBool(PrefsKeys.showStates) ?? Defaults.showStates) {
       _paintTrajectoryStates(simulatedPath, canvas);
     }
 
@@ -483,7 +484,8 @@ class PathPainter extends CustomPainter {
       canvas.drawCircle(end, 7.0, markerPaint);
 
       if (previewTime != null) {
-        final ghostTime = ghost.trajectoryTimeForPreview(_currentPreviewSeconds());
+        final ghostTime =
+            ghost.trajectoryTimeForPreview(_currentPreviewSeconds());
         final state = ghost.trajectory.sample(ghostTime);
         PathPainterUtil.paintRobotOutline(
           state.pose,

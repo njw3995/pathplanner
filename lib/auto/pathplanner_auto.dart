@@ -9,6 +9,218 @@ import 'package:pathplanner/commands/path_command.dart';
 import 'package:pathplanner/pages/project/project_page.dart';
 import 'package:pathplanner/services/log.dart';
 
+void _safeRenamePathPlannerFileSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && targetFile.existsSync()) {
+    if (sourceFile.existsSync()) {
+      sourceFile.deleteSync();
+    }
+    return;
+  }
+
+  try {
+    if (sourceFile.existsSync()) {
+      sourceFile.renameSync(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+
+    rethrow;
+  }
+}
+
+Future<void> safeRenameOrDeleteSourceIfTargetExists(
+  dynamic sourceFile,
+  String targetPath,
+) async {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && await targetFile.exists()) {
+    if (await sourceFile.exists()) {
+      await sourceFile.delete();
+    }
+    return;
+  }
+
+  try {
+    if (await sourceFile.exists()) {
+      await safeRenameOrDeleteSourceIfTargetExists(sourceFile, targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && await targetFile.exists()) {
+      if (await sourceFile.exists()) {
+        await sourceFile.delete();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
+void safeRenameOrDeleteSourceIfTargetExistsSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && targetFile.existsSync()) {
+    if (sourceFile.existsSync()) {
+      sourceFile.deleteSync();
+    }
+    return;
+  }
+
+  try {
+    if (sourceFile.existsSync()) {
+      safeRenameOrDeleteSourceIfTargetExistsSync(sourceFile, targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
+Future<void> _safeRenameOrRemoveExistingFile(
+  dynamic sourceFile,
+  String targetPath,
+) async {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  try {
+    if (targetFile != null && await targetFile.exists()) {
+      if (await sourceFile.exists()) {
+        await sourceFile.delete();
+      }
+      return;
+    }
+
+    if (await sourceFile.exists()) {
+      await _safeRenameOrRemoveExistingFile(sourceFile, targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && await targetFile.exists()) {
+      if (await sourceFile.exists()) {
+        await sourceFile.delete();
+      }
+      return;
+    }
+
+    if (await sourceFile.exists()) {
+      try {
+        if (targetFile != null) {
+          await sourceFile.copy(targetPath);
+          await sourceFile.delete();
+          return;
+        }
+      } catch (_) {
+        rethrow;
+      }
+    }
+
+    rethrow;
+  }
+}
+
+void _safeRenameOrRemoveExistingFileSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  try {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+
+    if (sourceFile.existsSync()) {
+      _safeRenameOrRemoveExistingFileSync(sourceFile, targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+
+    if (sourceFile.existsSync()) {
+      try {
+        if (targetFile != null) {
+          sourceFile.copySync(targetPath);
+          sourceFile.deleteSync();
+          return;
+        }
+      } catch (_) {
+        rethrow;
+      }
+    }
+
+    rethrow;
+  }
+}
+
 const String fileVersion = '2025.0';
 
 class PathPlannerAuto {
@@ -115,7 +327,7 @@ class PathPlannerAuto {
     File autoFile = fs.file(join(autoDir, '${this.name}.auto'));
 
     if (autoFile.existsSync()) {
-      autoFile.rename(join(autoDir, '$name.auto'));
+      _safeRenamePathPlannerFileSync(autoFile, join(autoDir, '$name.auto'));
     }
     this.name = name;
     lastModified = DateTime.now().toUtc();

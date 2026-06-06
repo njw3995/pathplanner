@@ -49,6 +49,7 @@ class PrefsKeys {
   static const String bumperOffsetX = 'bumperOffsetX';
   static const String bumperOffsetY = 'bumperOffsetY';
   static const String robotFeatures = 'robotFeatures';
+  static const String hasFrenzyDot = 'hasFrenzyDot';
 }
 
 class Defaults {
@@ -100,4 +101,5 @@ class Defaults {
   static const double bumperOffsetX = 0.0;
   static const double bumperOffsetY = 0.0;
   static const List<String> robotFeatures = [];
+  static const bool hasFrenzyDot = false;
 }

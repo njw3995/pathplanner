@@ -105,11 +105,10 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
         ),
         const SizedBox(height: 6),
         for (int i = 0; i < zones.length; i++)
-            if (_zoneInRange(zones[i])) _buildZoneCard(i),
+          if (_zoneInRange(zones[i])) _buildZoneCard(i),
       ],
     );
   }
-
 
   bool _zoneInRange(PointTowardsZone zone) {
     final maxWaypointPos = waypoints.length - 1.0;
@@ -177,6 +176,7 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
 
   Widget _buildZoneCard(int zoneIdx) {
     ColorScheme colorScheme = Theme.of(context).colorScheme;
+    final linkedName = zones[zoneIdx].linkedName?.trim();
 
     return TreeCardNode(
       controller: _controllers[zoneIdx],
@@ -214,6 +214,17 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
               ));
             },
           ),
+          if (linkedName != null && linkedName.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Text(
+              'Target: $linkedName',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: colorScheme.primary,
+                fontSize: 13,
+              ),
+            ),
+          ],
           Expanded(child: Container()),
           Visibility(
             visible: _selectedZone == null,
@@ -300,14 +311,16 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
             children: [
               Expanded(
                 child: NumberTextField(
-                  initialValue: zones[zoneIdx].fieldPosition.x,
+                  initialValue: zones[zoneIdx].targetPosition.x,
                   label: 'Field Position X (M)',
                   onSubmitted: (value) {
                     if (value != null) {
                       _addChange(
                           zoneIdx,
-                          () => zones[zoneIdx].fieldPosition = Translation2d(
-                              value, zones[zoneIdx].fieldPosition.y));
+                          () => _setPointTargetPosition(
+                              zoneIdx,
+                              Translation2d(
+                                  value, zones[zoneIdx].targetPosition.y)));
                     }
                   },
                 ),
@@ -315,14 +328,16 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
               const SizedBox(width: 8),
               Expanded(
                 child: NumberTextField(
-                  initialValue: zones[zoneIdx].fieldPosition.y,
+                  initialValue: zones[zoneIdx].targetPosition.y,
                   label: 'Field Position Y (M)',
                   onSubmitted: (value) {
                     if (value != null) {
                       _addChange(
                           zoneIdx,
-                          () => zones[zoneIdx].fieldPosition = Translation2d(
-                              zones[zoneIdx].fieldPosition.x, value));
+                          () => _setPointTargetPosition(
+                              zoneIdx,
+                              Translation2d(
+                                  zones[zoneIdx].targetPosition.x, value)));
                     }
                   },
                 ),
@@ -330,6 +345,8 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
             ],
           ),
         ),
+        const SizedBox(height: 8),
+        _buildLinkedTargetControls(zoneIdx),
         const SizedBox(height: 12),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 6.0),
@@ -480,6 +497,228 @@ class _PointTowardsZonesTreeState extends State<PointTowardsZonesTree> {
         ),
       ],
     );
+  }
+
+  String _waypointLabel(int waypointIdx) {
+    final waypoint = waypoints[waypointIdx];
+    final linkedName = waypoint.linkedName?.trim();
+
+    if (linkedName != null && linkedName.isNotEmpty) {
+      if (waypoint.isStartPoint) {
+        return '(Start) $linkedName';
+      }
+
+      if (waypoint.isEndPoint) {
+        return '(End) $linkedName';
+      }
+
+      return linkedName;
+    }
+
+    if (waypoint.isStartPoint) {
+      return 'Start Point';
+    }
+
+    if (waypoint.isEndPoint) {
+      return 'End Point';
+    }
+
+    return 'Waypoint $waypointIdx';
+  }
+
+  Widget _buildLinkedTargetControls(int zoneIdx) {
+    final linkedName = zones[zoneIdx].linkedName?.trim();
+
+    return Center(
+      child: Wrap(
+        runSpacing: 8,
+        alignment: WrapAlignment.center,
+        children: [
+          IconButton(
+            onPressed: () => _showLinkedTargetDialog(zoneIdx),
+            icon: Icon(
+              linkedName == null || linkedName.isEmpty
+                  ? Icons.add_link_rounded
+                  : Icons.link_rounded,
+              size: 20,
+            ),
+          ),
+          if (linkedName != null && linkedName.isNotEmpty)
+            IconButton(
+              onPressed: () => _unlinkPointTarget(zoneIdx),
+              icon: const Icon(Icons.link_off_rounded, size: 20),
+            ),
+          _buildSetTargetFromWaypointButton(zoneIdx),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSetTargetFromWaypointButton(int zoneIdx) {
+    if (waypoints.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return PopupMenuButton<int>(
+      icon: const Icon(Icons.location_on_rounded, size: 20),
+      onSelected: (waypointIdx) =>
+          _setPointTargetFromWaypoint(zoneIdx, waypointIdx),
+      itemBuilder: (context) {
+        return [
+          for (int i = 0; i < waypoints.length; i++)
+            PopupMenuItem(
+              value: i,
+              child: Text('Set from ${_waypointLabel(i)}'),
+            ),
+        ];
+      },
+    );
+  }
+
+  void _syncLinkedTarget(String linkedName, Translation2d position) {
+    PointTowardsZone.linkedTargets[linkedName] = position;
+
+    for (final zone in zones) {
+      if (zone.linkedName == linkedName) {
+        zone.fieldPosition = position;
+      }
+    }
+  }
+
+  Future<void> _showLinkedTargetDialog(int zoneIdx) async {
+    final controller = TextEditingController(
+      text: zones[zoneIdx].linkedName?.trim().isNotEmpty == true
+          ? zones[zoneIdx].linkedName!.trim()
+          : zones[zoneIdx].name,
+    );
+
+    try {
+      final linkedName = await showDialog<String>(
+        context: context,
+        builder: (context) {
+          ColorScheme colorScheme = Theme.of(context).colorScheme;
+
+          return AlertDialog(
+            backgroundColor: colorScheme.surface,
+            surfaceTintColor: colorScheme.surfaceTint,
+            title: const Text('Link Point Towards Target'),
+            content: SizedBox(
+              width: 400,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Convert this point-towards target to a linked target. Moving one target with this name updates all point-towards zones using the same linked target.',
+                  ),
+                  const SizedBox(height: 18),
+                  const Text(
+                    'If you choose an existing linked point-towards target, this zone will snap to that target position.',
+                  ),
+                  const SizedBox(height: 18),
+                  DropdownMenu<String>(
+                    label: const Text('Linked Target Name'),
+                    controller: controller,
+                    enableSearch: false,
+                    enableFilter: true,
+                    width: 400,
+                    dropdownMenuEntries: [
+                      for (String name in PointTowardsZone.linkedTargets.keys)
+                        DropdownMenuEntry(
+                          value: name,
+                          label: name,
+                        ),
+                    ],
+                    inputDecorationTheme: InputDecorationTheme(
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      contentPadding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+                      isDense: true,
+                      constraints: const BoxConstraints(
+                        maxHeight: 42,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: Navigator.of(context).pop,
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop(controller.text.trim());
+                },
+                child: const Text('Confirm'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (linkedName == null || linkedName.trim().isEmpty) {
+        return;
+      }
+
+      final cleanedName = linkedName.trim();
+      _addZoneListChange(() {
+        zones[zoneIdx].setLinkedName(cleanedName);
+        _syncLinkedTarget(cleanedName, zones[zoneIdx].targetPosition);
+      });
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  void _unlinkPointTarget(int zoneIdx) {
+    _addZoneListChange(() {
+      zones[zoneIdx].linkedName = null;
+    });
+  }
+
+  void _setPointTargetFromWaypoint(int zoneIdx, int waypointIdx) {
+    if (waypointIdx < 0 || waypointIdx >= waypoints.length) {
+      return;
+    }
+
+    final target = waypoints[waypointIdx].anchor;
+
+    _addZoneListChange(() {
+      zones[zoneIdx].setTargetPosition(target);
+
+      final linkedName = zones[zoneIdx].linkedName;
+      if (linkedName != null && linkedName.trim().isNotEmpty) {
+        _syncLinkedTarget(linkedName.trim(), target);
+      }
+    });
+  }
+
+  void _setPointTargetPosition(int zoneIdx, Translation2d target) {
+    _addZoneListChange(() {
+      zones[zoneIdx].setTargetPosition(target);
+
+      final linkedName = zones[zoneIdx].linkedName;
+      if (linkedName != null && linkedName.trim().isNotEmpty) {
+        _syncLinkedTarget(linkedName.trim(), target);
+      }
+    });
+  }
+
+  void _addZoneListChange(VoidCallback execute) {
+    widget.undoStack.add(Change(
+      PathPlannerPath.clonePointTowardsZones(zones),
+      () {
+        execute.call();
+        widget.onPathChanged?.call();
+      },
+      (oldValue) {
+        widget.path.pointTowardsZones =
+            PathPlannerPath.clonePointTowardsZones(oldValue);
+        widget.onPathChanged?.call();
+      },
+    ));
   }
 
   void _addChange(int zoneIdx, VoidCallback execute) {

@@ -3,6 +3,16 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:multi_split_view/multi_split_view.dart';
+import 'package:pathplanner/pages/project/project_page.dart';
+import 'package:pathplanner/commands/wait_command.dart';
+import 'package:pathplanner/commands/path_command.dart';
+import 'package:pathplanner/commands/named_command.dart';
+import 'package:pathplanner/commands/command_groups.dart';
+import 'package:pathplanner/commands/command.dart';
+import 'package:pathplanner/auto/pathplanner_auto.dart';
+import 'package:pathplanner/path/ideal_starting_state.dart';
+import 'package:pathplanner/path/goal_end_state.dart';
+import 'package:path/path.dart' as p;
 import 'package:pathplanner/path/constraints_zone.dart';
 import 'package:pathplanner/path/event_marker.dart';
 import 'package:pathplanner/path/path_constraints.dart';
@@ -74,6 +84,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
   int? _draggedRotationIdx;
   Translation2d? _draggedRotationPos;
   Rotation2d? _dragRotationOldValue;
+  int? _draggedPointTargetZoneIdx;
+  Translation2d? _dragPointTargetOldValue;
   PathPlannerTrajectory? _simTraj;
   bool _paused = false;
   late bool _holonomicMode;
@@ -213,6 +225,27 @@ class _SplitPathEditorState extends State<SplitPathEditor>
                   }
                 }
 
+                // Not dragging any waypoints, check point-towards targets
+                num pointTargetRadius = _pixelsToMeters(
+                    PathPainterUtil.uiPointSizeToPixels(
+                        18, PathPainter.scale, widget.fieldImage));
+
+                for (int i = widget.path.pointTowardsZones.length - 1;
+                    i >= 0;
+                    i--) {
+                  final zone = widget.path.pointTowardsZones[i];
+                  final target = zone.targetPosition;
+
+                  if (pow(xPos - target.x, 2) + pow(yPos - target.y, 2) <
+                      pow(pointTargetRadius, 2)) {
+                    _draggedPointTargetZoneIdx = i;
+                    _dragPointTargetOldValue = target;
+                    _setSelectedWaypoint(null);
+                    _selectedPointZone = i;
+                    return;
+                  }
+                }
+
                 // Not dragging any waypoints, check rotations
                 num dotRadius = _pixelsToMeters(
                     PathPainterUtil.uiPointSizeToPixels(
@@ -311,6 +344,28 @@ class _SplitPathEditorState extends State<SplitPathEditor>
                     _draggedPoint!.dragUpdate(targetX, targetY);
                     widget.path.generatePathPoints();
                   });
+                } else if (_draggedPointTargetZoneIdx != null) {
+                  final zone = widget
+                      .path.pointTowardsZones[_draggedPointTargetZoneIdx!];
+
+                  final targetPosition = Translation2d(
+                    _xPixelsToMeters(details.localPosition.dx),
+                    _yPixelsToMeters(details.localPosition.dy),
+                  );
+
+                  setState(() {
+                    zone.setTargetPosition(targetPosition);
+
+                    final linkedName = zone.linkedName;
+                    if (linkedName != null && linkedName.trim().isNotEmpty) {
+                      _syncCurrentPathPointTargetLink(
+                        linkedName.trim(),
+                        targetPosition,
+                      );
+                    }
+
+                    widget.path.generatePathPoints();
+                  });
                 } else if (_draggedRotationIdx != null) {
                   Translation2d pos;
                   if (_draggedRotationIdx == -2) {
@@ -372,6 +427,63 @@ class _SplitPathEditorState extends State<SplitPathEditor>
                     },
                   ));
                   _draggedPoint = null;
+                } else if (_draggedPointTargetZoneIdx != null) {
+                  final zoneIdx = _draggedPointTargetZoneIdx!;
+                  final endPosition =
+                      widget.path.pointTowardsZones[zoneIdx].targetPosition;
+
+                  widget.undoStack.add(Change(
+                    _dragPointTargetOldValue,
+                    () {
+                      setState(() {
+                        final zone = widget.path.pointTowardsZones[zoneIdx];
+                        zone.setTargetPosition(endPosition);
+
+                        final linkedName = zone.linkedName;
+                        if (linkedName != null &&
+                            linkedName.trim().isNotEmpty) {
+                          _syncCurrentPathPointTargetLink(
+                            linkedName.trim(),
+                            endPosition,
+                          );
+                        }
+
+                        widget.path.generateAndSavePath();
+                        _simulatePath();
+                        widget.onPathChanged?.call();
+                      });
+
+                      if (widget.hotReload) {
+                        widget.telemetry?.hotReloadPath(widget.path);
+                      }
+                    },
+                    (oldValue) {
+                      setState(() {
+                        final zone = widget.path.pointTowardsZones[zoneIdx];
+                        zone.setTargetPosition(oldValue!);
+
+                        final linkedName = zone.linkedName;
+                        if (linkedName != null &&
+                            linkedName.trim().isNotEmpty) {
+                          _syncCurrentPathPointTargetLink(
+                            linkedName.trim(),
+                            oldValue,
+                          );
+                        }
+
+                        widget.path.generateAndSavePath();
+                        _simulatePath();
+                        widget.onPathChanged?.call();
+                      });
+
+                      if (widget.hotReload) {
+                        widget.telemetry?.hotReloadPath(widget.path);
+                      }
+                    },
+                  ));
+
+                  _draggedPointTargetZoneIdx = null;
+                  _dragPointTargetOldValue = null;
                 } else if (_draggedRotationIdx != null) {
                   if (_draggedRotationIdx == -2) {
                     final endRotation = widget.path.idealStartingState.rotation;
@@ -723,6 +835,7 @@ class _SplitPathEditorState extends State<SplitPathEditor>
                         _selectedMarker = value;
                       });
                     },
+                    onMarkerSplit: _splitPathAtMarker,
                     onOptimizationUpdate: (result) => setState(() {
                       _optimizedPath = result;
                     }),
@@ -739,40 +852,713 @@ class _SplitPathEditorState extends State<SplitPathEditor>
             ],
           ),
         ),
-      Positioned(
-        right: 24,
-        bottom: 140,
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            FilledButton.icon(
-              icon: const Icon(Icons.speed),
-              label: const Text('Optimize End'),
-              onPressed: _optimizeEndVelocity,
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              icon: const Icon(Icons.sync_alt),
-              label: const Text('Sync Vel'),
-              onPressed: _syncLinkedVelocities,
-            ),
-          ],
+        Positioned(
+          right: 24,
+          bottom: 140,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FilledButton.icon(
+                icon: const Icon(Icons.speed),
+                label: const Text('Optimize End'),
+                onPressed: _optimizeEndVelocity,
+              ),
+              const SizedBox(width: 8),
+              FilledButton.icon(
+                icon: const Icon(Icons.sync_alt),
+                label: const Text('Sync Vel'),
+                onPressed: _syncLinkedVelocities,
+              ),
+            ],
+          ),
         ),
-      ),
-
-      Positioned(
-        right: 24,
-        bottom: 84,
-        child: FilledButton.icon(
-          icon: const Icon(Icons.link),
-          label: const Text('Sync linked headings'),
-          onPressed: _syncLinkedHandoffHeadings,
+        Positioned(
+          right: 24,
+          bottom: 84,
+          child: FilledButton.icon(
+            icon: const Icon(Icons.link),
+            label: const Text('Sync linked headings'),
+            onPressed: _syncLinkedHandoffHeadings,
+          ),
         ),
-      ),
       ],
     );
   }
 
+  void _showSplitPathError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  String _uniqueSplitPathName(String preferredName,
+      {String? allowedExistingName}) {
+    var candidate = preferredName.trim();
+    if (candidate.isEmpty) {
+      candidate = '${widget.path.name} Part 2';
+    }
+
+    final baseName = candidate;
+    var copyIndex = 2;
+
+    bool existsAndNotAllowed(String name) {
+      if (allowedExistingName != null && name == allowedExistingName) {
+        return false;
+      }
+
+      return widget.path.fs
+          .file(p.join(widget.path.pathDir, '$name.path'))
+          .existsSync();
+    }
+
+    while (existsAndNotAllowed(candidate)) {
+      candidate = '$baseName $copyIndex';
+      copyIndex++;
+    }
+
+    return candidate;
+  }
+
+  String _autoDirForCurrentPath() {
+    return p.join(p.dirname(widget.path.pathDir), 'autos');
+  }
+
+  Translation2d _lerpTranslation(
+    Translation2d a,
+    Translation2d b,
+    num t,
+  ) {
+    return a + ((b - a) * t);
+  }
+
+  num _clampWaypointPos(num value, num maxValue) {
+    return min(max(value, 0), maxValue);
+  }
+
+  Rotation2d _rotationAtWaypointRelativePos(num waypointRelativePos) {
+    if (waypointRelativePos <= 0) {
+      return widget.path.idealStartingState.rotation;
+    }
+
+    if (waypointRelativePos >= widget.path.waypoints.length - 1) {
+      return widget.path.goalEndState.rotation;
+    }
+
+    var rotation = widget.path.idealStartingState.rotation;
+    final sortedTargets = List<RotationTarget>.from(widget.path.rotationTargets)
+      ..sort(
+        (a, b) => a.waypointRelativePos.compareTo(b.waypointRelativePos),
+      );
+
+    for (final target in sortedTargets) {
+      if (target.waypointRelativePos <= waypointRelativePos) {
+        rotation = target.rotation;
+      } else {
+        break;
+      }
+    }
+
+    return rotation;
+  }
+
+  String _commandPreviewName(Command command) {
+    if (command is NamedCommand) {
+      return command.name == null || command.name!.trim().isEmpty
+          ? 'Named Command'
+          : 'Named Command: ${command.name}';
+    }
+
+    if (command is WaitCommand) {
+      return 'Wait: ${command.waitTime}s';
+    }
+
+    if (command is PathCommand) {
+      return 'Path: ${command.pathName ?? ''}';
+    }
+
+    return command.type;
+  }
+
+  Future<String?> _promptOptionalSplitNamedCommandName() async {
+    final controller = TextEditingController();
+
+    try {
+      return showDialog<String>(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Stationary Command'),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'This marker does not have a command or event name. Add an optional named command to insert between the split paths.',
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: controller,
+                    decoration: const InputDecoration(
+                      labelText: 'Named command',
+                      hintText: 'Leave blank to split without a command',
+                    ),
+                    autofocus: true,
+                    onSubmitted: (value) {
+                      Navigator.of(context).pop(value.trim());
+                    },
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(null),
+                child: const Text('Cancel'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(''),
+                child: const Text('No Command'),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(context).pop(controller.text.trim()),
+                child: const Text('Use Named Command'),
+              ),
+            ],
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
+  }
+
+  Future<bool> _confirmSplitPath({
+    required String originalName,
+    required String part1Name,
+    required String part2Name,
+    required Command? stationaryCommand,
+    required List<String> updatedAutoNames,
+  }) async {
+    final commandText = stationaryCommand == null
+        ? 'No stationary command will be inserted.'
+        : 'Stationary command: ${_commandPreviewName(stationaryCommand)}';
+
+    final autoText = updatedAutoNames.isEmpty
+        ? 'No autos currently reference "$originalName".'
+        : updatedAutoNames.map((name) => '• $name').join('\n');
+
+    final replacementText = stationaryCommand == null
+        ? '$originalName\n  -> $part1Name\n  -> $part2Name'
+        : '$originalName\n  -> $part1Name\n  -> ${_commandPreviewName(stationaryCommand)}\n  -> $part2Name';
+
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              title: const Text('Split Path at Event Marker'),
+              content: SizedBox(
+                width: 560,
+                child: SingleChildScrollView(
+                  child: SelectableText(
+                    'This will rename and split the current path:\n\n'
+                    '$originalName\n'
+                    '  -> $part1Name.path\n'
+                    '  -> $part2Name.path\n\n'
+                    '$commandText\n\n'
+                    'Auto replacement:\n'
+                    '$replacementText\n\n'
+                    'Autos updated:\n'
+                    '$autoText',
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Split Path'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Future<List<PathPlannerAuto>> _loadAutosForSplit() async {
+    final autoDir = _autoDirForCurrentPath();
+    final autoDirectory = widget.path.fs.directory(autoDir);
+
+    if (!autoDirectory.existsSync()) {
+      return [];
+    }
+
+    return PathPlannerAuto.loadAllAutosInDir(autoDir, widget.path.fs);
+  }
+
+  int _countPathCommandUsages(List<Command> commands, String pathName) {
+    var count = 0;
+
+    for (final command in commands) {
+      if (command is PathCommand && command.pathName == pathName) {
+        count++;
+      } else if (command is CommandGroup) {
+        count += _countPathCommandUsages(command.commands, pathName);
+      }
+    }
+
+    return count;
+  }
+
+  int _replacePathCommandUsages({
+    required List<Command> commands,
+    required String oldPathName,
+    required String part1Name,
+    required String part2Name,
+    required Command? stationaryCommand,
+  }) {
+    var replacements = 0;
+
+    for (var i = 0; i < commands.length; i++) {
+      final command = commands[i];
+
+      if (command is PathCommand && command.pathName == oldPathName) {
+        final replacement = <Command>[
+          PathCommand(pathName: part1Name),
+          if (stationaryCommand != null) stationaryCommand.clone(),
+          PathCommand(pathName: part2Name),
+        ];
+
+        commands.replaceRange(i, i + 1, replacement);
+        replacements++;
+        i += replacement.length - 1;
+      } else if (command is CommandGroup) {
+        replacements += _replacePathCommandUsages(
+          commands: command.commands,
+          oldPathName: oldPathName,
+          part1Name: part1Name,
+          part2Name: part2Name,
+          stationaryCommand: stationaryCommand,
+        );
+      }
+    }
+
+    return replacements;
+  }
+
+  Future<void> _splitPathAtMarker(int markerIdx) async {
+    if (markerIdx < 0 || markerIdx >= widget.path.eventMarkers.length) {
+      _showSplitPathError('Select a valid event marker first.');
+      return;
+    }
+
+    final splitMarker = widget.path.eventMarkers[markerIdx];
+
+    if (splitMarker.isZoned) {
+      _showSplitPathError(
+        'Split Path Here currently supports point event markers, not zoned event markers.',
+      );
+      return;
+    }
+
+    final splitPos = splitMarker.waypointRelativePos;
+    final maxOriginalPos = widget.path.waypoints.length - 1;
+
+    if (widget.path.waypoints.length < 2 ||
+        splitPos <= 0.0 ||
+        splitPos >= maxOriginalPos) {
+      _showSplitPathError(
+        'The marker must be between the first and last waypoint.',
+      );
+      return;
+    }
+
+    Command? stationaryCommand = splitMarker.command?.clone();
+
+    if (stationaryCommand == null && splitMarker.name.trim().isNotEmpty) {
+      stationaryCommand = NamedCommand(name: splitMarker.name.trim());
+    }
+
+    if (stationaryCommand == null && splitMarker.name.trim().isEmpty) {
+      final commandName = await _promptOptionalSplitNamedCommandName();
+
+      if (commandName == null) {
+        return;
+      }
+
+      if (commandName.trim().isNotEmpty) {
+        stationaryCommand = NamedCommand(name: commandName.trim());
+        ProjectPage.events.add(commandName.trim());
+      }
+    }
+
+    final originalName = widget.path.name;
+    final part1Name = _uniqueSplitPathName(
+      '$originalName Part 1',
+      allowedExistingName: originalName,
+    );
+    final part2Name = _uniqueSplitPathName('$originalName Part 2');
+
+    final autos = await _loadAutosForSplit();
+    final updatedAutoNames = <String>[];
+
+    for (final auto in autos) {
+      if (_countPathCommandUsages(auto.sequence.commands, originalName) > 0) {
+        updatedAutoNames.add(auto.name);
+      }
+    }
+
+    final confirmed = await _confirmSplitPath(
+      originalName: originalName,
+      part1Name: part1Name,
+      part2Name: part2Name,
+      stationaryCommand: stationaryCommand,
+      updatedAutoNames: updatedAutoNames,
+    );
+
+    if (!confirmed || !mounted) {
+      return;
+    }
+
+    const splitEpsilon = 1E-6;
+    final originalWaypoints =
+        PathPlannerPath.cloneWaypoints(widget.path.waypoints);
+    final originalGoalEndState = widget.path.goalEndState.clone();
+
+    final splitSegment = splitPos.floor();
+    final splitT = splitPos - splitSegment;
+
+    final List<Waypoint> firstWaypoints;
+    final List<Waypoint> secondWaypoints;
+    int? existingSplitWaypointIdx;
+
+    if (splitT.abs() < splitEpsilon) {
+      existingSplitWaypointIdx = splitSegment;
+    } else if ((1.0 - splitT).abs() < splitEpsilon) {
+      existingSplitWaypointIdx = splitSegment + 1;
+    }
+
+    if (existingSplitWaypointIdx != null) {
+      if (existingSplitWaypointIdx <= 0 ||
+          existingSplitWaypointIdx >= originalWaypoints.length - 1) {
+        _showSplitPathError(
+          'The marker must be between the first and last waypoint.',
+        );
+        return;
+      }
+
+      firstWaypoints = [
+        for (int i = 0; i <= existingSplitWaypointIdx; i++)
+          originalWaypoints[i].clone(),
+      ];
+      firstWaypoints.last.nextControl = null;
+
+      secondWaypoints = [
+        for (int i = existingSplitWaypointIdx;
+            i < originalWaypoints.length;
+            i++)
+          originalWaypoints[i].clone(),
+      ];
+      secondWaypoints.first.prevControl = null;
+    } else {
+      final before = originalWaypoints[splitSegment];
+      final after = originalWaypoints[splitSegment + 1];
+
+      if (before.nextControl == null || after.prevControl == null) {
+        _showSplitPathError(
+          'Could not split this path because the split segment is missing control points.',
+        );
+        return;
+      }
+
+      final p0 = before.anchor;
+      final p1 = before.nextControl!;
+      final p2 = after.prevControl!;
+      final p3 = after.anchor;
+
+      final p01 = _lerpTranslation(p0, p1, splitT);
+      final p12 = _lerpTranslation(p1, p2, splitT);
+      final p23 = _lerpTranslation(p2, p3, splitT);
+      final p012 = _lerpTranslation(p01, p12, splitT);
+      final p123 = _lerpTranslation(p12, p23, splitT);
+      final splitAnchor = _lerpTranslation(p012, p123, splitT);
+
+      firstWaypoints = [
+        for (int i = 0; i <= splitSegment; i++) originalWaypoints[i].clone(),
+        Waypoint(
+          anchor: splitAnchor,
+          prevControl: p012,
+        ),
+      ];
+      firstWaypoints[firstWaypoints.length - 2].nextControl = p01;
+
+      secondWaypoints = [
+        Waypoint(
+          anchor: splitAnchor,
+          nextControl: p123,
+        ),
+        for (int i = splitSegment + 1; i < originalWaypoints.length; i++)
+          originalWaypoints[i].clone(),
+      ];
+      secondWaypoints[1].prevControl = p23;
+    }
+
+    final firstMaxPos = firstWaypoints.length - 1;
+    final secondMaxPos = secondWaypoints.length - 1;
+
+    num mapFirstPos(num pos) {
+      if (existingSplitWaypointIdx != null) {
+        return _clampWaypointPos(pos, firstMaxPos);
+      }
+
+      if (pos <= splitSegment) {
+        return _clampWaypointPos(pos, firstMaxPos);
+      }
+
+      final remapped =
+          splitSegment + ((pos - splitSegment) / max(splitT, splitEpsilon));
+      return _clampWaypointPos(remapped, firstMaxPos);
+    }
+
+    num mapSecondPos(num pos) {
+      if (existingSplitWaypointIdx != null) {
+        return _clampWaypointPos(pos - existingSplitWaypointIdx, secondMaxPos);
+      }
+
+      if (pos < splitSegment + 1) {
+        final remapped = (pos - splitPos) / max(1.0 - splitT, splitEpsilon);
+        return _clampWaypointPos(remapped, secondMaxPos);
+      }
+
+      return _clampWaypointPos(pos - splitSegment, secondMaxPos);
+    }
+
+    final firstRotationTargets = <RotationTarget>[];
+    final secondRotationTargets = <RotationTarget>[];
+
+    for (final target in widget.path.rotationTargets) {
+      final cloned = target.clone();
+
+      if (target.waypointRelativePos <= splitPos + splitEpsilon) {
+        cloned.waypointRelativePos = mapFirstPos(target.waypointRelativePos);
+        firstRotationTargets.add(cloned);
+      } else {
+        cloned.waypointRelativePos = mapSecondPos(target.waypointRelativePos);
+        secondRotationTargets.add(cloned);
+      }
+    }
+
+    final firstEventMarkers = <EventMarker>[];
+    final secondEventMarkers = <EventMarker>[];
+
+    for (int i = 0; i < widget.path.eventMarkers.length; i++) {
+      if (i == markerIdx) {
+        continue;
+      }
+
+      final marker = widget.path.eventMarkers[i];
+
+      if (!marker.isZoned) {
+        final cloned = marker.clone();
+
+        if (marker.waypointRelativePos <= splitPos + splitEpsilon) {
+          cloned.waypointRelativePos = mapFirstPos(marker.waypointRelativePos);
+          firstEventMarkers.add(cloned);
+        } else {
+          cloned.waypointRelativePos = mapSecondPos(marker.waypointRelativePos);
+          secondEventMarkers.add(cloned);
+        }
+
+        continue;
+      }
+
+      final start = marker.waypointRelativePos;
+      final end = marker.endWaypointRelativePos!;
+
+      if (end <= splitPos + splitEpsilon) {
+        final cloned = marker.clone();
+        cloned.waypointRelativePos = mapFirstPos(start);
+        cloned.endWaypointRelativePos = mapFirstPos(end);
+        firstEventMarkers.add(cloned);
+      } else if (start >= splitPos - splitEpsilon) {
+        final cloned = marker.clone();
+        cloned.waypointRelativePos = mapSecondPos(start);
+        cloned.endWaypointRelativePos = mapSecondPos(end);
+        secondEventMarkers.add(cloned);
+      } else {
+        final firstClone = marker.clone();
+        firstClone.waypointRelativePos = mapFirstPos(start);
+        firstClone.endWaypointRelativePos = firstMaxPos;
+        firstEventMarkers.add(firstClone);
+
+        final secondClone = marker.clone();
+        secondClone.waypointRelativePos = 0.0;
+        secondClone.endWaypointRelativePos = mapSecondPos(end);
+        secondEventMarkers.add(secondClone);
+      }
+    }
+
+    final firstConstraintZones = <ConstraintsZone>[];
+    final secondConstraintZones = <ConstraintsZone>[];
+
+    for (final zone in widget.path.constraintZones) {
+      final start = zone.minWaypointRelativePos;
+      final end = zone.maxWaypointRelativePos;
+
+      if (end <= splitPos + splitEpsilon) {
+        final cloned = zone.clone();
+        cloned.minWaypointRelativePos = mapFirstPos(start);
+        cloned.maxWaypointRelativePos = mapFirstPos(end);
+        firstConstraintZones.add(cloned);
+      } else if (start >= splitPos - splitEpsilon) {
+        final cloned = zone.clone();
+        cloned.minWaypointRelativePos = mapSecondPos(start);
+        cloned.maxWaypointRelativePos = mapSecondPos(end);
+        secondConstraintZones.add(cloned);
+      } else {
+        final firstClone = zone.clone();
+        firstClone.minWaypointRelativePos = mapFirstPos(start);
+        firstClone.maxWaypointRelativePos = firstMaxPos;
+        firstConstraintZones.add(firstClone);
+
+        final secondClone = zone.clone();
+        secondClone.minWaypointRelativePos = 0.0;
+        secondClone.maxWaypointRelativePos = mapSecondPos(end);
+        secondConstraintZones.add(secondClone);
+      }
+    }
+
+    final firstPointZones = <PointTowardsZone>[];
+    final secondPointZones = <PointTowardsZone>[];
+
+    for (final zone in widget.path.pointTowardsZones) {
+      final start = zone.minWaypointRelativePos;
+      final end = zone.maxWaypointRelativePos;
+
+      if (end <= splitPos + splitEpsilon) {
+        final cloned = zone.clone();
+        cloned.minWaypointRelativePos = mapFirstPos(start);
+        cloned.maxWaypointRelativePos = mapFirstPos(end);
+        firstPointZones.add(cloned);
+      } else if (start >= splitPos - splitEpsilon) {
+        final cloned = zone.clone();
+        cloned.minWaypointRelativePos = mapSecondPos(start);
+        cloned.maxWaypointRelativePos = mapSecondPos(end);
+        secondPointZones.add(cloned);
+      } else {
+        final firstClone = zone.clone();
+        firstClone.minWaypointRelativePos = mapFirstPos(start);
+        firstClone.maxWaypointRelativePos = firstMaxPos;
+        firstPointZones.add(firstClone);
+
+        final secondClone = zone.clone();
+        secondClone.minWaypointRelativePos = 0.0;
+        secondClone.maxWaypointRelativePos = mapSecondPos(end);
+        secondPointZones.add(secondClone);
+      }
+    }
+
+    final splitRotation = _rotationAtWaypointRelativePos(splitPos);
+
+    final secondPath = PathPlannerPath(
+      name: part2Name,
+      waypoints: secondWaypoints,
+      globalConstraints: widget.path.globalConstraints.clone(),
+      goalEndState: originalGoalEndState,
+      constraintZones: secondConstraintZones,
+      pointTowardsZones: secondPointZones,
+      rotationTargets: secondRotationTargets,
+      eventMarkers: secondEventMarkers,
+      pathDir: widget.path.pathDir,
+      fs: widget.path.fs,
+      reversed: widget.path.reversed,
+      folder: widget.path.folder,
+      idealStartingState: IdealStartingState(0, splitRotation),
+      useDefaultConstraints: widget.path.useDefaultConstraints,
+    );
+
+    setState(() {
+      widget.path.renamePath(part1Name);
+      widget.path.waypoints = firstWaypoints;
+      widget.path.goalEndState = GoalEndState(0, splitRotation);
+      widget.path.constraintZones = firstConstraintZones;
+      widget.path.pointTowardsZones = firstPointZones;
+      widget.path.rotationTargets = firstRotationTargets;
+      widget.path.eventMarkers = firstEventMarkers;
+
+      _selectedWaypoint = null;
+      _hoveredWaypoint = null;
+      _selectedMarker = null;
+      _hoveredMarker = null;
+      _selectedRotTarget = null;
+      _hoveredRotTarget = null;
+      _selectedZone = null;
+      _hoveredZone = null;
+      _selectedPointZone = null;
+      _hoveredPointZone = null;
+
+      widget.path.generateAndSavePath();
+      secondPath.generateAndSavePath();
+      _simulatePath();
+    });
+
+    final savedAutos = <String>[];
+
+    for (final auto in autos) {
+      final replacements = _replacePathCommandUsages(
+        commands: auto.sequence.commands,
+        oldPathName: originalName,
+        part1Name: part1Name,
+        part2Name: part2Name,
+        stationaryCommand: stationaryCommand,
+      );
+
+      if (replacements > 0) {
+        auto.saveFile();
+        savedAutos.add(auto.name);
+      }
+    }
+
+    if (widget.hotReload) {
+      widget.telemetry?.hotReloadPath(widget.path);
+      widget.telemetry?.hotReloadPath(secondPath);
+    }
+
+    widget.onPathChanged?.call();
+
+    final autoMessage = savedAutos.isEmpty
+        ? 'No autos referenced "$originalName".'
+        : 'Updated autos: ${savedAutos.join(', ')}';
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Split "$originalName" into "$part1Name.path" and "$part2Name.path". $autoMessage',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _syncCurrentPathPointTargetLink(
+      String linkedName, Translation2d position) {
+    PointTowardsZone.linkedTargets[linkedName] = position;
+
+    for (final zone in widget.path.pointTowardsZones) {
+      if (zone.linkedName == linkedName) {
+        zone.fieldPosition = position;
+      }
+    }
+  }
 
   Future<void> _syncLinkedHandoffHeadings() async {
     const double maxHeadingSpreadDeg = 12.0;
@@ -865,7 +1651,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
 
           final handleDx = last.anchor.x - prevControl.x;
           final handleDy = last.anchor.y - prevControl.y;
-          final handleLength = sqrt((handleDx * handleDx) + (handleDy * handleDy));
+          final handleLength =
+              sqrt((handleDx * handleDx) + (handleDy * handleDy));
 
           if (handleLength <= minHandleLength) {
             skipped.add('${path.name}: end handle too short at $linkedName');
@@ -891,7 +1678,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
 
           if (path.name == widget.path.name) {
             setState(() {
-              widget.path.waypoints = PathPlannerPath.cloneWaypoints(path.waypoints);
+              widget.path.waypoints =
+                  PathPlannerPath.cloneWaypoints(path.waypoints);
               widget.path.generatePathPoints();
               _simulatePath();
             });
@@ -908,9 +1696,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
       final changedExtra = changedNames.length > 12
           ? '\n...and ${changedNames.length - 12} more'
           : '';
-      final skippedExtra = skipped.length > 12
-          ? '\n...and ${skipped.length - 12} more'
-          : '';
+      final skippedExtra =
+          skipped.length > 12 ? '\n...and ${skipped.length - 12} more' : '';
 
       await showDialog(
         context: context,
@@ -949,11 +1736,6 @@ class _SplitPathEditorState extends State<SplitPathEditor>
       );
     }
   }
-
-
-
-
-
 
   void _optimizeEndVelocity() {
     final oldEndVelocity = widget.path.goalEndState.velocityMPS;
@@ -1090,13 +1872,16 @@ class _SplitPathEditorState extends State<SplitPathEditor>
 
       if (incomingValues.length == 1) {
         final target = incomingValues.first;
-        if ((widget.path.idealStartingState.velocityMPS - target).abs() > 1e-6) {
+        if ((widget.path.idealStartingState.velocityMPS - target).abs() >
+            1e-6) {
           remember(widget.path);
           widget.path.idealStartingState.velocityMPS = target;
-          changes.add('Start velocity <- ${target.toStringAsFixed(2)} m/s from $currentStartLink');
+          changes.add(
+              'Start velocity <- ${target.toStringAsFixed(2)} m/s from $currentStartLink');
         }
       } else if (incomingValues.length > 1) {
-        skipped.add('Start $currentStartLink has multiple incoming velocities: ${incomingValues.join(', ')}');
+        skipped.add(
+            'Start $currentStartLink has multiple incoming velocities: ${incomingValues.join(', ')}');
       }
     }
 
@@ -1114,7 +1899,8 @@ class _SplitPathEditorState extends State<SplitPathEditor>
         if ((actual.idealStartingState.velocityMPS - target).abs() > 1e-6) {
           remember(actual);
           actual.idealStartingState.velocityMPS = target;
-          changes.add('${actual.name} start <- ${target.toStringAsFixed(2)} m/s from ${widget.path.name} end');
+          changes.add(
+              '${actual.name} start <- ${target.toStringAsFixed(2)} m/s from ${widget.path.name} end');
         }
       }
     }

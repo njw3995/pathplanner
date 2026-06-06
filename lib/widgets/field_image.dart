@@ -27,7 +27,8 @@ class FieldImage {
 
   static List<FieldImage>? _officialFields;
 
-  static final FieldImage defaultField = FieldImage.official(OfficialField.rebuilt);
+  static final FieldImage defaultField =
+      FieldImage.official(OfficialField.rebuilt);
 
   static List<FieldImage> offialFields() {
     _officialFields ??= [

@@ -30,6 +30,10 @@ class BattlecryPassSpec {
 class BattlecryFinalSpec {
   String type;
   String dot;
+  bool sweepBeforeDot;
+  bool fullSweepBeforeDot;
+  String halfSweep;
+  bool passOption;
   bool risky;
   bool greedy;
   bool hub;
@@ -38,6 +42,10 @@ class BattlecryFinalSpec {
   BattlecryFinalSpec({
     this.type = 'dot',
     this.dot = 'center',
+    this.sweepBeforeDot = false,
+    this.fullSweepBeforeDot = true,
+    this.halfSweep = 'close',
+    this.passOption = false,
     this.risky = false,
     this.greedy = false,
     this.hub = true,
@@ -48,6 +56,10 @@ class BattlecryFinalSpec {
     return BattlecryFinalSpec(
       type: type,
       dot: dot,
+      sweepBeforeDot: sweepBeforeDot,
+      fullSweepBeforeDot: fullSweepBeforeDot,
+      halfSweep: halfSweep,
+      passOption: passOption,
       risky: risky,
       greedy: greedy,
       hub: hub,

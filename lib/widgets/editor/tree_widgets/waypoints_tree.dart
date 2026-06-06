@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pathplanner/path/constraints_zone.dart';
 import 'package:pathplanner/path/event_marker.dart';
 import 'package:pathplanner/path/pathplanner_path.dart';
+import 'package:pathplanner/path/point_towards_zone.dart';
 import 'package:pathplanner/path/rotation_target.dart';
 import 'package:pathplanner/path/waypoint.dart';
 import 'package:pathplanner/util/prefs.dart';
@@ -103,12 +104,7 @@ class _WaypointsTreeState extends State<WaypointsTree> {
 
     Waypoint waypoint = waypoints[waypointIdx];
 
-    String name = 'Waypoint $waypointIdx';
-    if (waypoint.isStartPoint) {
-      name = 'Start Point';
-    } else if (waypoint.isEndPoint) {
-      name = 'End Point';
-    }
+    final name = _waypointLabel(waypointIdx);
 
     return TreeCardNode(
       onHoverStart: () => widget.onWaypointHovered?.call(waypointIdx),
@@ -142,17 +138,6 @@ class _WaypointsTreeState extends State<WaypointsTree> {
             const Icon(Icons.room),
           const SizedBox(width: 8),
           Text(name),
-          if (waypoint.linkedName != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8.0),
-              child: Tooltip(
-                message: waypoint.linkedName,
-                child: const Icon(
-                  Icons.link,
-                  color: Colors.green,
-                ),
-              ),
-            ),
           Expanded(child: Container()),
           Tooltip(
             message: waypoint.isLocked ? 'Unlock' : 'Lock',
@@ -334,6 +319,7 @@ class _WaypointsTreeState extends State<WaypointsTree> {
                     icon: const Icon(Icons.rotate_right_rounded, size: 20),
                   ),
                 ),
+              _buildSetWaypointFromPointTargetButton(waypointIdx),
               if (waypointIdx != waypoints.length - 1)
                 Tooltip(
                   message: 'Create New Waypoint After',
@@ -405,6 +391,80 @@ class _WaypointsTreeState extends State<WaypointsTree> {
         ),
       ],
     );
+  }
+
+  String _waypointLabel(int waypointIdx) {
+    final waypoint = waypoints[waypointIdx];
+    final linkedName = waypoint.linkedName?.trim();
+
+    if (linkedName != null && linkedName.isNotEmpty) {
+      if (waypoint.isStartPoint) {
+        return '(Start) $linkedName';
+      }
+
+      if (waypoint.isEndPoint) {
+        return '(End) $linkedName';
+      }
+
+      return linkedName;
+    }
+
+    if (waypoint.isStartPoint) {
+      return 'Start Point';
+    }
+
+    if (waypoint.isEndPoint) {
+      return 'End Point';
+    }
+
+    return 'Waypoint $waypointIdx';
+  }
+
+  String _pointZoneLabel(int zoneIdx) {
+    final zone = widget.path.pointTowardsZones[zoneIdx];
+    final linkedName = zone.linkedName?.trim();
+
+    if (linkedName != null && linkedName.isNotEmpty) {
+      return linkedName;
+    }
+
+    return zone.name;
+  }
+
+  Widget _buildSetWaypointFromPointTargetButton(int waypointIdx) {
+    if (widget.path.pointTowardsZones.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return PopupMenuButton<int>(
+      icon: const Icon(Icons.my_location_rounded, size: 20),
+      onSelected: (zoneIdx) =>
+          _setWaypointPositionFromPointTarget(waypointIdx, zoneIdx),
+      itemBuilder: (context) {
+        return [
+          for (int i = 0; i < widget.path.pointTowardsZones.length; i++)
+            PopupMenuItem(
+              value: i,
+              child: Text('Set from ${_pointZoneLabel(i)}'),
+            ),
+        ];
+      },
+    );
+  }
+
+  void _setWaypointPositionFromPointTarget(int waypointIdx, int zoneIdx) {
+    if (zoneIdx < 0 || zoneIdx >= widget.path.pointTowardsZones.length) {
+      return;
+    }
+
+    final target = widget.path.pointTowardsZones[zoneIdx].targetPosition;
+    final waypoint = waypoints[waypointIdx];
+
+    widget.undoStack.add(_waypointChange(
+      waypoint,
+      () => waypoint.move(target.x, target.y),
+      (oldVal) => waypoint.move(oldVal.anchor.x, oldVal.anchor.y),
+    ));
   }
 
   void _showLinkedDialog(int waypointIdx) {

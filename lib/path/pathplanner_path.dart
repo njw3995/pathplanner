@@ -23,6 +23,72 @@ import 'package:pathplanner/util/geometry_util.dart';
 import 'package:pathplanner/util/wpimath/geometry.dart';
 import 'package:pathplanner/util/wpimath/math_util.dart';
 
+String? _generatedCopyFolderFromPathName(String pathName) {
+  const sourceSpacedDashPaths = {
+    'Shoot - Close',
+    'Shoot - Center',
+    'Close - Center',
+    'Close - Close',
+    'Sneaky - Center',
+    'Sneaky - Close',
+  };
+
+  final trimmed = pathName.trim();
+  if (sourceSpacedDashPaths.contains(trimmed)) {
+    return null;
+  }
+
+  final splitIdx = trimmed.indexOf(' - ');
+  if (splitIdx <= 0) {
+    return null;
+  }
+
+  final folderName = trimmed.substring(0, splitIdx).trim();
+  if (folderName.isEmpty) {
+    return null;
+  }
+
+  return folderName;
+}
+
+void _safeRenamePathPlannerFileSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && targetFile.existsSync()) {
+    if (sourceFile.existsSync()) {
+      sourceFile.deleteSync();
+    }
+    return;
+  }
+
+  try {
+    if (sourceFile.existsSync()) {
+      sourceFile.renameSync(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+
+    rethrow;
+  }
+}
+
 const double targetIncrement = 0.05;
 const double targetSpacing = 0.2;
 const String fileVersion = '2025.0';
@@ -220,7 +286,7 @@ class PathPlannerPath {
     File pathFile = fs.file(join(pathDir, '${this.name}.path'));
 
     if (pathFile.existsSync()) {
-      pathFile.rename(join(pathDir, '$name.path'));
+      _safeRenamePathPlannerFileSync(pathFile, join(pathDir, '$name.path'));
     }
     this.name = name;
     lastModified = DateTime.now().toUtc();
@@ -253,7 +319,7 @@ class PathPlannerPath {
       'globalConstraints': globalConstraints.toJson(),
       'goalEndState': goalEndState.toJson(),
       'reversed': reversed,
-      'folder': folder,
+      'folder': _generatedCopyFolderFromPathName(name) ?? folder,
       'idealStartingState': idealStartingState.toJson(),
       'useDefaultConstraints': useDefaultConstraints,
     };
@@ -670,7 +736,7 @@ class PathPlannerPath {
         final zone = _pointZoneForPos(pathPoints[i].waypointPos);
         if (zone != null) {
           final angleToTarget =
-              (zone.fieldPosition - pathPoints[i].position).angle;
+              (zone.targetPosition - pathPoints[i].position).angle;
           final rotation = angleToTarget + zone.rotationOffset;
           pathPoints[i].rotationTarget =
               RotationTarget(pathPoints[i].waypointPos, rotation, false);

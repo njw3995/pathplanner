@@ -75,7 +75,6 @@ class _AppSettingsState extends State<AppSettings> {
   }
 
   @override
-
   Future<void> _deleteCustomFieldImage(FieldImage field) async {
     Directory appDir = await getApplicationSupportDirectory();
     Directory imagesDir = Directory(join(appDir.path, 'custom_fields'));
@@ -583,7 +582,8 @@ class _AppSettingsState extends State<AppSettings> {
     showDialog(
       context: context,
       builder: (BuildContext context) {
-        return ImportFieldDialog(onImport: (String name, double pixelsPerMeter, double marginMeters, File imageFile) async {
+        return ImportFieldDialog(onImport: (String name, double pixelsPerMeter,
+            double marginMeters, File imageFile) async {
           for (FieldImage image in widget.fieldImages) {
             if (image.name == name) {
               showDialog(
@@ -620,9 +620,9 @@ class _AppSettingsState extends State<AppSettings> {
 
           String imageExtension = imageFile.path.split('.').last;
           String importedFileName = marginMeters == 0.0
-          ? '${name}_${pixelsPerMeter.toStringAsFixed(2)}.$imageExtension'
-          : '${name}_${pixelsPerMeter.toStringAsFixed(2)}_${marginMeters.toStringAsFixed(2)}.$imageExtension';
-      String importedPath = join(imagesDir.path, importedFileName);
+              ? '${name}_${pixelsPerMeter.toStringAsFixed(2)}.$imageExtension'
+              : '${name}_${pixelsPerMeter.toStringAsFixed(2)}_${marginMeters.toStringAsFixed(2)}.$imageExtension';
+          String importedPath = join(imagesDir.path, importedFileName);
 
           await imageFile.copy(importedPath);
 

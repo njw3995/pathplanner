@@ -33,6 +33,80 @@ import 'package:undo/undo.dart';
 import 'package:watcher/watcher.dart';
 import 'package:pathplanner/commands/path_command.dart';
 
+Future<void> safeRenameOrDeleteSourceIfTargetExists(
+  dynamic sourceFile,
+  String targetPath,
+) async {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && await targetFile.exists()) {
+    if (await sourceFile.exists()) {
+      await sourceFile.delete();
+    }
+    return;
+  }
+
+  try {
+    if (await sourceFile.exists()) {
+      await sourceFile.rename(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && await targetFile.exists()) {
+      if (await sourceFile.exists()) {
+        await sourceFile.delete();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
+void safeRenameOrDeleteSourceIfTargetExistsSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && targetFile.existsSync()) {
+    if (sourceFile.existsSync()) {
+      sourceFile.deleteSync();
+    }
+    return;
+  }
+
+  try {
+    if (sourceFile.existsSync()) {
+      sourceFile.renameSync(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
 class ProjectPage extends StatefulWidget {
   static Set<String> events = {};
 
@@ -96,6 +170,13 @@ class _ProjectPageState extends State<ProjectPage> {
   StreamSubscription<WatchEvent>? _autosWatcherSub;
   Timer? _pathplannerReloadTimer;
   bool _checkingPathplannerFiles = false;
+
+  bool _bulkSelectPaths = false;
+  bool _bulkSelectAutos = false;
+  final Set<String> _selectedBulkPathNames = {};
+  final Set<String> _selectedBulkAutoNames = {};
+  final Set<String> _selectedBulkPathFolders = {};
+  final Set<String> _selectedBulkAutoFolders = {};
 
   String _pathSearchQuery = '';
   String _autoSearchQuery = '';
@@ -270,7 +351,8 @@ class _ProjectPageState extends State<ProjectPage> {
 
       if (mounted) {
         ScaffoldMessenger.of(this.context).showSnackBar(
-          const SnackBar(content: Text('Reloaded external PathPlanner changes')),
+          const SnackBar(
+              content: Text('Reloaded external PathPlanner changes')),
         );
       }
     } finally {
@@ -943,6 +1025,14 @@ class _ProjectPageState extends State<ProjectPage> {
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(12),
                                     onTap: () {
+                                      if (_bulkSelectPaths) {
+                                        _toggleBulkFolder(
+                                          isPathsView: true,
+                                          folderName: _pathFolders[i],
+                                        );
+                                        return;
+                                      }
+
                                       setState(() {
                                         _pathFolder = _pathFolders[i];
                                       });
@@ -954,6 +1044,13 @@ class _ProjectPageState extends State<ProjectPage> {
                                         children: [
                                           Icon(
                                             Icons.folder_outlined,
+                                            color: candidates.isNotEmpty
+                                                ? colorScheme.onPrimary
+                                                : null,
+                                          ),
+                                          _buildFolderSelectionCheckbox(
+                                            isPathsView: true,
+                                            folderName: _pathFolders[i],
                                             color: candidates.isNotEmpty
                                                 ? colorScheme.onPrimary
                                                 : null,
@@ -975,7 +1072,8 @@ class _ProjectPageState extends State<ProjectPage> {
                                                       _pathFolders[i]) {
                                                     if (_pathFolders
                                                         .contains(newName)) {
-                                                      showDialog(context: this.context,
+                                                      showDialog(
+                                                          context: this.context,
                                                           builder: (BuildContext
                                                               context) {
                                                             ColorScheme
@@ -1071,7 +1169,6 @@ class _ProjectPageState extends State<ProjectPage> {
       ),
     );
   }
-
 
   String _safeSaveAsName(String name) {
     final cleaned = name.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
@@ -1215,7 +1312,7 @@ class _ProjectPageState extends State<ProjectPage> {
     }
   }
 
-      PathPlannerPath _copyPathFile({
+  PathPlannerPath _copyPathFile({
     required String sourcePathName,
     required String newPathName,
     required String folder,
@@ -1234,7 +1331,8 @@ class _ProjectPageState extends State<ProjectPage> {
 
     final decoded = jsonDecode(src.readAsStringSync());
     if (decoded is! Map) {
-      throw StateError('Path file "$sourcePathName.path" is not a JSON object.');
+      throw StateError(
+          'Path file "$sourcePathName.path" is not a JSON object.');
     }
 
     final pathJson = Map<String, dynamic>.from(decoded);
@@ -1260,7 +1358,7 @@ class _ProjectPageState extends State<ProjectPage> {
     final newName = await _promptSaveAsName(
       context: context,
       title: 'Save Path As',
-      initialName: '${source.name} Copy',
+      initialName: 'Copy Of ${source.name}',
       exists: pathNames.contains,
       extension: '.path',
     );
@@ -1303,13 +1401,13 @@ class _ProjectPageState extends State<ProjectPage> {
     }
   }
 
-      Future<void> _saveAsAuto(PathPlannerAuto source, BuildContext context) async {
+  Future<void> _saveAsAuto(PathPlannerAuto source, BuildContext context) async {
     final autoNames = _autos.map((auto) => auto.name).toSet();
 
     final newName = await _promptSaveAsName(
       context: context,
       title: 'Save Auto As',
-      initialName: '${source.name} Copy',
+      initialName: 'Copy Of ${source.name}',
       exists: autoNames.contains,
       extension: '.auto',
     );
@@ -1384,7 +1482,6 @@ class _ProjectPageState extends State<ProjectPage> {
       }
     }
   }
-
 
   void _rewriteAutoPathNames(Command command, Map<String, String> mapping) {
     void walk(Command cmd) {
@@ -1461,6 +1558,1481 @@ class _ProjectPageState extends State<ProjectPage> {
     }
   }
 
+  Widget _buildBulkActionsButton({required bool isPathsView}) {
+    final active = _bulkSelectActive(isPathsView);
+
+    return Tooltip(
+      message: active ? 'Exit Multi Select' : 'Multi Select',
+      child: IconButton(
+        icon: Icon(
+          Icons.checklist_rounded,
+          color: active ? Theme.of(this.context).colorScheme.primary : null,
+        ),
+        onPressed: () {
+          setState(() {
+            if (isPathsView) {
+              _bulkSelectPaths = !_bulkSelectPaths;
+
+              if (!_bulkSelectPaths) {
+                _clearBulkSelection(isPathsView: true);
+              }
+            } else {
+              _bulkSelectAutos = !_bulkSelectAutos;
+
+              if (!_bulkSelectAutos) {
+                _clearBulkSelection(isPathsView: false);
+              }
+            }
+          });
+        },
+      ),
+    );
+  }
+
+  bool _bulkSelectActive(bool isPathsView) {
+    return isPathsView ? _bulkSelectPaths : _bulkSelectAutos;
+  }
+
+  Set<String> _bulkSelectedItemNames({required bool isPathsView}) {
+    return isPathsView ? _selectedBulkPathNames : _selectedBulkAutoNames;
+  }
+
+  Set<String> _bulkSelectedFolderNames({required bool isPathsView}) {
+    return isPathsView ? _selectedBulkPathFolders : _selectedBulkAutoFolders;
+  }
+
+  void _clearBulkSelection({required bool isPathsView}) {
+    _bulkSelectedItemNames(isPathsView: isPathsView).clear();
+    _bulkSelectedFolderNames(isPathsView: isPathsView).clear();
+  }
+
+  void _setBulkItemSelected({
+    required bool isPathsView,
+    required String name,
+    required bool selected,
+  }) {
+    setState(() {
+      final selectedItems = _bulkSelectedItemNames(isPathsView: isPathsView);
+
+      if (selected) {
+        selectedItems.add(name);
+      } else {
+        selectedItems.remove(name);
+      }
+    });
+  }
+
+  void _toggleBulkItem({
+    required bool isPathsView,
+    required String name,
+  }) {
+    final selectedItems = _bulkSelectedItemNames(isPathsView: isPathsView);
+    _setBulkItemSelected(
+      isPathsView: isPathsView,
+      name: name,
+      selected: !selectedItems.contains(name),
+    );
+  }
+
+  void _setBulkFolderSelected({
+    required bool isPathsView,
+    required String folderName,
+    required bool selected,
+  }) {
+    setState(() {
+      final selectedFolders =
+          _bulkSelectedFolderNames(isPathsView: isPathsView);
+
+      if (selected) {
+        selectedFolders.add(folderName);
+      } else {
+        selectedFolders.remove(folderName);
+      }
+    });
+  }
+
+  void _toggleBulkFolder({
+    required bool isPathsView,
+    required String folderName,
+  }) {
+    final selectedFolders = _bulkSelectedFolderNames(isPathsView: isPathsView);
+    _setBulkFolderSelected(
+      isPathsView: isPathsView,
+      folderName: folderName,
+      selected: !selectedFolders.contains(folderName),
+    );
+  }
+
+  Widget _buildFolderSelectionCheckbox({
+    required bool isPathsView,
+    required String folderName,
+    required Color? color,
+  }) {
+    if (!_bulkSelectActive(isPathsView)) {
+      return const SizedBox.shrink();
+    }
+
+    final selectedFolders = _bulkSelectedFolderNames(isPathsView: isPathsView);
+
+    return SizedBox(
+      width: 34,
+      child: Checkbox(
+        value: selectedFolders.contains(folderName),
+        visualDensity: VisualDensity.compact,
+        checkColor: color,
+        side: color == null ? null : BorderSide(color: color),
+        onChanged: (value) {
+          _setBulkFolderSelected(
+            isPathsView: isPathsView,
+            folderName: folderName,
+            selected: value ?? false,
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildBulkActionsRow({required bool isPathsView}) {
+    if (!_bulkSelectActive(isPathsView)) {
+      return const SizedBox.shrink();
+    }
+
+    final selectedItems = _bulkSelectedItemNames(isPathsView: isPathsView);
+    final selectedFolders = _bulkSelectedFolderNames(isPathsView: isPathsView);
+    final selectionCount = selectedItems.length + selectedFolders.length;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          Chip(
+            avatar: const Icon(Icons.check_circle_outline_rounded),
+            label: Text('$selectionCount selected'),
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.select_all_rounded),
+            label: const Text('Select All'),
+            onPressed: () {
+              setState(() {
+                selectedItems
+                  ..clear()
+                  ..addAll(_visibleBulkItemNames(isPathsView: isPathsView));
+                selectedFolders
+                  ..clear()
+                  ..addAll(_visibleBulkFolderNames(isPathsView: isPathsView));
+              });
+            },
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.clear_all_rounded),
+            label: const Text('Clear'),
+            onPressed: () {
+              setState(() {
+                _clearBulkSelection(isPathsView: isPathsView);
+              });
+            },
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.save_as_rounded),
+            label: const Text('Save As'),
+            onPressed: selectionCount == 0
+                ? null
+                : () async {
+                    final itemSnapshot = Set<String>.from(selectedItems);
+                    final folderSnapshot = Set<String>.from(selectedFolders);
+
+                    await _saveAsBulkSelection(
+                      isPathsView: isPathsView,
+                      itemNames: itemSnapshot,
+                      folderNames: folderSnapshot,
+                    );
+
+                    // Intentionally do not clear selection here. If the user
+                    // cancels a Save As dialog, their current selection should
+                    // stay intact. They can press Clear or toggle multi-select
+                    // off when done.
+                  },
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.copy_rounded),
+            label: const Text('Duplicate'),
+            onPressed: selectionCount == 0
+                ? null
+                : () async {
+                    final itemSnapshot = Set<String>.from(selectedItems);
+                    final folderSnapshot = Set<String>.from(selectedFolders);
+
+                    final ok = await _confirmBulkAction(
+                      title: 'Duplicate Selection',
+                      message:
+                          'Duplicate $selectionCount selected ${isPathsView ? 'path/folder' : 'auto/folder'} item(s)?',
+                    );
+
+                    if (!ok || !mounted) {
+                      return;
+                    }
+
+                    _duplicateBulkSelection(
+                      isPathsView: isPathsView,
+                      itemNames: itemSnapshot,
+                      folderNames: folderSnapshot,
+                    );
+
+                    if (mounted) {
+                      setState(() {
+                        _clearBulkSelection(isPathsView: isPathsView);
+                      });
+                    }
+                  },
+          ),
+          ActionChip(
+            avatar: const Icon(Icons.delete_outline_rounded),
+            label: const Text('Delete'),
+            onPressed: selectionCount == 0
+                ? null
+                : () async {
+                    final itemSnapshot = Set<String>.from(selectedItems);
+                    final folderSnapshot = Set<String>.from(selectedFolders);
+
+                    final ok = await _confirmBulkAction(
+                      title: 'Delete Selection',
+                      message:
+                          'Delete $selectionCount selected ${isPathsView ? 'path/folder' : 'auto/folder'} item(s)?\n\nDeleting a folder also deletes everything in that folder.',
+                    );
+
+                    if (!ok || !mounted) {
+                      return;
+                    }
+
+                    _deleteBulkSelection(
+                      isPathsView: isPathsView,
+                      itemNames: itemSnapshot,
+                      folderNames: folderSnapshot,
+                    );
+
+                    if (mounted) {
+                      setState(() {
+                        _clearBulkSelection(isPathsView: isPathsView);
+                      });
+                    }
+                  },
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<String> _visibleBulkItemNames({required bool isPathsView}) {
+    if (isPathsView) {
+      if (_inChoreoFolder) {
+        return [];
+      }
+
+      final query = _pathSearchQuery.toLowerCase();
+      final names = <String>[];
+
+      for (final path in _paths) {
+        if (path.folder == _pathFolder &&
+            path.name.toLowerCase().contains(query)) {
+          names.add(path.name);
+        }
+      }
+
+      names.sort();
+      return names;
+    }
+
+    final query = _autoSearchQuery.toLowerCase();
+    final names = <String>[];
+
+    for (final auto in _autos) {
+      if (auto.folder == _autoFolder &&
+          auto.name.toLowerCase().contains(query)) {
+        names.add(auto.name);
+      }
+    }
+
+    names.sort();
+    return names;
+  }
+
+  List<String> _bulkFolderNames({required bool isPathsView}) {
+    final folders =
+        List<String>.from(isPathsView ? _pathFolders : _autoFolders);
+    folders.sort();
+    return folders;
+  }
+
+  PathPlannerPath? _pathByName(String name) {
+    for (final path in _paths) {
+      if (path.name == name) {
+        return path;
+      }
+    }
+
+    return null;
+  }
+
+  PathPlannerAuto? _autoByName(String name) {
+    for (final auto in _autos) {
+      if (auto.name == name) {
+        return auto;
+      }
+    }
+
+    return null;
+  }
+
+  String _uniqueFolderName(String baseName, Set<String> existingNames) {
+    var cleanedBase = _safeSaveAsName('$baseName Copy');
+    if (cleanedBase.isEmpty) {
+      cleanedBase = 'Folder Copy';
+    }
+
+    if (!existingNames.contains(cleanedBase)) {
+      return cleanedBase;
+    }
+
+    var copyIndex = 2;
+    while (existingNames.contains('$cleanedBase $copyIndex')) {
+      copyIndex++;
+    }
+
+    return '$cleanedBase $copyIndex';
+  }
+
+  Future<bool> _confirmBulkAction({
+    required String title,
+    required String message,
+  }) async {
+    return await showDialog<bool>(
+          context: this.context,
+          builder: (dialogContext) {
+            final colorScheme = Theme.of(dialogContext).colorScheme;
+
+            return AlertDialog(
+              backgroundColor: colorScheme.surface,
+              surfaceTintColor: colorScheme.surfaceTint,
+              title: Text(title),
+              content: Text(message),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(false),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(true),
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Future<void> _showBulkActionsDialog({required bool isPathsView}) async {
+    final selectedItems = <String>{};
+    final selectedFolders = <String>{};
+
+    Future<void> Function()? deferredAction;
+
+    await showDialog<void>(
+      context: this.context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final colorScheme = Theme.of(context).colorScheme;
+            final itemNames = _visibleBulkItemNames(isPathsView: isPathsView);
+            final folderNames = _bulkFolderNames(isPathsView: isPathsView);
+            final selectionCount =
+                selectedItems.length + selectedFolders.length;
+            final canSaveAsSingle =
+                selectedItems.length == 1 && selectedFolders.isEmpty;
+
+            return AlertDialog(
+              backgroundColor: colorScheme.surface,
+              surfaceTintColor: colorScheme.surfaceTint,
+              title: Text(
+                  isPathsView ? 'Multi Select Paths' : 'Multi Select Autos'),
+              content: SizedBox(
+                width: 560,
+                height: 560,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ActionChip(
+                          avatar: const Icon(Icons.select_all_rounded),
+                          label: const Text('Select All Visible'),
+                          onPressed: () {
+                            setDialogState(() {
+                              selectedItems
+                                ..clear()
+                                ..addAll(itemNames);
+                            });
+                          },
+                        ),
+                        ActionChip(
+                          avatar: const Icon(Icons.clear_all_rounded),
+                          label: const Text('Clear'),
+                          onPressed: () {
+                            setDialogState(() {
+                              selectedItems.clear();
+                              selectedFolders.clear();
+                            });
+                          },
+                        ),
+                        Chip(
+                          avatar:
+                              const Icon(Icons.check_circle_outline_rounded),
+                          label: Text('$selectionCount selected'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          if (folderNames.isNotEmpty) ...[
+                            Text(
+                              'Folders',
+                              style: Theme.of(context).textTheme.titleSmall,
+                            ),
+                            const SizedBox(height: 4),
+                            for (final folderName in folderNames)
+                              CheckboxListTile(
+                                dense: true,
+                                value: selectedFolders.contains(folderName),
+                                secondary: const Icon(Icons.folder_outlined),
+                                title: Text(folderName),
+                                subtitle: Text(
+                                  isPathsView
+                                      ? '${_paths.where((path) => path.folder == folderName).length} path(s)'
+                                      : '${_autos.where((auto) => auto.folder == folderName).length} auto(s)',
+                                ),
+                                onChanged: (value) {
+                                  setDialogState(() {
+                                    if (value == true) {
+                                      selectedFolders.add(folderName);
+                                    } else {
+                                      selectedFolders.remove(folderName);
+                                    }
+                                  });
+                                },
+                              ),
+                            const Divider(),
+                          ],
+                          Text(
+                            isPathsView ? 'Visible Paths' : 'Visible Autos',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 4),
+                          if (itemNames.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 16),
+                              child: Text(
+                                isPathsView && _inChoreoFolder
+                                    ? 'Choreo paths are read-only here.'
+                                    : 'No visible ${isPathsView ? 'paths' : 'autos'} match this view/search.',
+                                style: TextStyle(
+                                    color: colorScheme.onSurfaceVariant),
+                              ),
+                            ),
+                          for (final itemName in itemNames)
+                            CheckboxListTile(
+                              dense: true,
+                              value: selectedItems.contains(itemName),
+                              secondary: Icon(
+                                isPathsView
+                                    ? Icons.route_rounded
+                                    : Icons.auto_mode_rounded,
+                              ),
+                              title: Text(itemName),
+                              onChanged: (value) {
+                                setDialogState(() {
+                                  if (value == true) {
+                                    selectedItems.add(itemName);
+                                  } else {
+                                    selectedItems.remove(itemName);
+                                  }
+                                });
+                              },
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Close'),
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.save_as_rounded),
+                  label: const Text('Save As'),
+                  onPressed: !canSaveAsSingle
+                      ? null
+                      : () {
+                          final name = selectedItems.single;
+                          deferredAction = () async {
+                            if (isPathsView) {
+                              final path = _pathByName(name);
+                              if (path != null) {
+                                await _saveAsPath(path, this.context);
+                              }
+                            } else {
+                              final auto = _autoByName(name);
+                              if (auto != null) {
+                                await _saveAsAuto(auto, this.context);
+                              }
+                            }
+                          };
+                          Navigator.of(dialogContext).pop();
+                        },
+                ),
+                TextButton.icon(
+                  icon: const Icon(Icons.copy_rounded),
+                  label: const Text('Duplicate'),
+                  onPressed: selectionCount == 0
+                      ? null
+                      : () async {
+                          final ok = await _confirmBulkAction(
+                            title: 'Duplicate Selection',
+                            message:
+                                'Duplicate $selectionCount selected ${isPathsView ? 'path/folder' : 'auto/folder'} item(s)?',
+                          );
+                          if (!ok || !mounted) {
+                            return;
+                          }
+
+                          _duplicateBulkSelection(
+                            isPathsView: isPathsView,
+                            itemNames: selectedItems,
+                            folderNames: selectedFolders,
+                          );
+                          Navigator.of(dialogContext).pop();
+                        },
+                ),
+                FilledButton.icon(
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  label: const Text('Delete'),
+                  onPressed: selectionCount == 0
+                      ? null
+                      : () async {
+                          final ok = await _confirmBulkAction(
+                            title: 'Delete Selection',
+                            message:
+                                'Delete $selectionCount selected ${isPathsView ? 'path/folder' : 'auto/folder'} item(s)?\n\nDeleting a folder also deletes everything in that folder.',
+                          );
+                          if (!ok || !mounted) {
+                            return;
+                          }
+
+                          _deleteBulkSelection(
+                            isPathsView: isPathsView,
+                            itemNames: selectedItems,
+                            folderNames: selectedFolders,
+                          );
+                          Navigator.of(dialogContext).pop();
+                        },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (deferredAction != null && mounted) {
+      await deferredAction!.call();
+    }
+  }
+
+  List<String> _visibleBulkFolderNames({required bool isPathsView}) {
+    if (isPathsView) {
+      if (_inChoreoFolder || _pathFolder != null) {
+        return [];
+      }
+
+      return List<String>.from(_pathFolders)..sort();
+    }
+
+    if (_autoFolder != null) {
+      return [];
+    }
+
+    return List<String>.from(_autoFolders)..sort();
+  }
+
+  String _uniqueCopyOfName(String baseName, Set<String> existingNames) {
+    var cleanedBase = _safeSaveAsName('Copy Of $baseName');
+    if (cleanedBase.isEmpty) {
+      cleanedBase = 'Copy Of File';
+    }
+
+    if (!existingNames.contains(cleanedBase)) {
+      return cleanedBase;
+    }
+
+    var copyIndex = 2;
+    while (existingNames.contains('$cleanedBase $copyIndex')) {
+      copyIndex++;
+    }
+
+    return '$cleanedBase $copyIndex';
+  }
+
+  String _formatPreviewLines(List<String> previewLines) {
+    if (previewLines.isEmpty) {
+      return 'No files will be copied.';
+    }
+
+    const maxPreviewLines = 18;
+    final visibleLines = previewLines.take(maxPreviewLines).join('\n');
+    final hiddenCount = previewLines.length - maxPreviewLines;
+
+    if (hiddenCount <= 0) {
+      return visibleLines;
+    }
+
+    return '$visibleLines\n...and $hiddenCount more';
+  }
+
+  List<String> _pathFolderSaveAsPreview({
+    required String sourceFolder,
+    required String newFolder,
+  }) {
+    final existingPathNames = _paths.map<String>((path) => path.name).toSet();
+    final preview = <String>['Folder: $sourceFolder -> $newFolder'];
+
+    final sourcePaths = _paths
+        .where((path) => path.folder == sourceFolder)
+        .cast<PathPlannerPath>()
+        .toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+
+    for (final sourcePath in sourcePaths) {
+      final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+      existingPathNames.add(newName);
+      preview.add('  ${sourcePath.name}.path -> $newName.path');
+    }
+
+    return preview;
+  }
+
+  List<String> _autoFolderSaveAsPreview({
+    required String sourceFolder,
+    required String newFolder,
+  }) {
+    final existingAutoNames = _autos.map<String>((auto) => auto.name).toSet();
+    final preview = <String>['Folder: $sourceFolder -> $newFolder'];
+
+    final sourceAutos = _autos
+        .where((auto) => auto.folder == sourceFolder)
+        .cast<PathPlannerAuto>()
+        .toList()
+      ..sort((a, b) => a.name.compareTo(b.name));
+
+    for (final sourceAuto in sourceAutos) {
+      final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+      existingAutoNames.add(newName);
+      preview.add('  ${sourceAuto.name}.auto -> $newName.auto');
+    }
+
+    return preview;
+  }
+
+  List<String> _pathSelectionSaveAsPreview({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final existingPathNames = _paths.map<String>((path) => path.name).toSet();
+    final existingFolderNames = _pathFolders.toSet();
+    final preview = <String>[];
+
+    final sortedFolders = folderNames.toList()..sort();
+    for (final sourceFolder in sortedFolders) {
+      final newFolder = _uniqueCopyOfName(sourceFolder, existingFolderNames);
+      existingFolderNames.add(newFolder);
+      preview.add('Folder: $sourceFolder -> $newFolder');
+
+      final sourcePaths = _paths
+          .where((path) => path.folder == sourceFolder)
+          .cast<PathPlannerPath>()
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+      for (final sourcePath in sourcePaths) {
+        final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+        existingPathNames.add(newName);
+        preview.add('  ${sourcePath.name}.path -> $newName.path');
+      }
+    }
+
+    final sortedItems = itemNames.toList()..sort();
+    for (final itemName in sortedItems) {
+      final sourcePath = _pathByName(itemName);
+      if (sourcePath == null || folderNames.contains(sourcePath.folder)) {
+        continue;
+      }
+
+      final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+      existingPathNames.add(newName);
+      preview.add('${sourcePath.name}.path -> $newName.path');
+    }
+
+    return preview;
+  }
+
+  List<String> _autoSelectionSaveAsPreview({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final existingAutoNames = _autos.map<String>((auto) => auto.name).toSet();
+    final existingFolderNames = _autoFolders.toSet();
+    final preview = <String>[];
+
+    final sortedFolders = folderNames.toList()..sort();
+    for (final sourceFolder in sortedFolders) {
+      final newFolder = _uniqueCopyOfName(sourceFolder, existingFolderNames);
+      existingFolderNames.add(newFolder);
+      preview.add('Folder: $sourceFolder -> $newFolder');
+
+      final sourceAutos = _autos
+          .where((auto) => auto.folder == sourceFolder)
+          .cast<PathPlannerAuto>()
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+      for (final sourceAuto in sourceAutos) {
+        final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+        existingAutoNames.add(newName);
+        preview.add('  ${sourceAuto.name}.auto -> $newName.auto');
+      }
+    }
+
+    final sortedItems = itemNames.toList()..sort();
+    for (final itemName in sortedItems) {
+      final sourceAuto = _autoByName(itemName);
+      if (sourceAuto == null || folderNames.contains(sourceAuto.folder)) {
+        continue;
+      }
+
+      final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+      existingAutoNames.add(newName);
+      preview.add('${sourceAuto.name}.auto -> $newName.auto');
+    }
+
+    return preview;
+  }
+
+  Future<void> _saveAsBulkSelection({
+    required bool isPathsView,
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) async {
+    if (itemNames.length == 1 && folderNames.isEmpty) {
+      final name = itemNames.single;
+
+      if (isPathsView) {
+        final path = _pathByName(name);
+        if (path != null) {
+          await _saveAsPath(path, this.context);
+        }
+      } else {
+        final auto = _autoByName(name);
+        if (auto != null) {
+          await _saveAsAuto(auto, this.context);
+        }
+      }
+
+      return;
+    }
+
+    if (folderNames.length == 1 && itemNames.isEmpty) {
+      await _saveAsBulkFolder(
+        isPathsView: isPathsView,
+        sourceFolder: folderNames.single,
+      );
+      return;
+    }
+
+    await _saveAsBulkSelectionCopies(
+      isPathsView: isPathsView,
+      itemNames: itemNames,
+      folderNames: folderNames,
+    );
+  }
+
+  Future<void> _saveAsBulkFolder({
+    required bool isPathsView,
+    required String sourceFolder,
+  }) async {
+    final existingFolders =
+        isPathsView ? _pathFolders.toSet() : _autoFolders.toSet();
+
+    final newFolder = await _promptSaveAsName(
+      context: this.context,
+      title: isPathsView ? 'Save Path Folder As' : 'Save Auto Folder As',
+      initialName: 'Copy Of $sourceFolder',
+      exists: existingFolders.contains,
+      extension: '',
+    );
+
+    if (newFolder == null) {
+      return;
+    }
+
+    final previewLines = isPathsView
+        ? _pathFolderSaveAsPreview(
+            sourceFolder: sourceFolder,
+            newFolder: newFolder,
+          )
+        : _autoFolderSaveAsPreview(
+            sourceFolder: sourceFolder,
+            newFolder: newFolder,
+          );
+
+    final ok = await _confirmBulkAction(
+      title: 'Save Folder As',
+      message:
+          'This will create the following ${isPathsView ? 'path' : 'auto'} folder copy:\n\n${_formatPreviewLines(previewLines)}',
+    );
+
+    if (!ok || !mounted) {
+      return;
+    }
+
+    if (isPathsView) {
+      await _saveAsPathFolderCopy(
+        sourceFolder: sourceFolder,
+        newFolder: newFolder,
+      );
+    } else {
+      await _saveAsAutoFolderCopy(
+        sourceFolder: sourceFolder,
+        newFolder: newFolder,
+      );
+    }
+  }
+
+  Future<void> _saveAsBulkSelectionCopies({
+    required bool isPathsView,
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) async {
+    final selectionCount = itemNames.length + folderNames.length;
+    final previewLines = isPathsView
+        ? _pathSelectionSaveAsPreview(
+            itemNames: itemNames,
+            folderNames: folderNames,
+          )
+        : _autoSelectionSaveAsPreview(
+            itemNames: itemNames,
+            folderNames: folderNames,
+          );
+
+    final ok = await _confirmBulkAction(
+      title: 'Save Selection As',
+      message:
+          'This will save $selectionCount selected ${isPathsView ? 'path/folder' : 'auto/folder'} item(s) as:\n\n${_formatPreviewLines(previewLines)}',
+    );
+
+    if (!ok || !mounted) {
+      return;
+    }
+
+    if (isPathsView) {
+      await _saveAsPathSelectionCopies(
+        itemNames: itemNames,
+        folderNames: folderNames,
+      );
+    } else {
+      await _saveAsAutoSelectionCopies(
+        itemNames: itemNames,
+        folderNames: folderNames,
+      );
+    }
+  }
+
+  Future<void> _saveAsPathSelectionCopies({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) async {
+    try {
+      final existingPathNames = _paths.map<String>((path) => path.name).toSet();
+      final existingFolderNames = _pathFolders.toSet();
+      final copiedPaths = <PathPlannerPath>[];
+      final newFolders = <String>[];
+
+      final sortedFolders = folderNames.toList()..sort();
+      for (final sourceFolder in sortedFolders) {
+        final newFolder = _uniqueCopyOfName(sourceFolder, existingFolderNames);
+        existingFolderNames.add(newFolder);
+        newFolders.add(newFolder);
+
+        final sourcePaths = _paths
+            .where((path) => path.folder == sourceFolder)
+            .cast<PathPlannerPath>()
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
+
+        for (final sourcePath in sourcePaths) {
+          final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+          existingPathNames.add(newName);
+
+          copiedPaths.add(
+            _copyPathFile(
+              sourcePathName: sourcePath.name,
+              newPathName: newName,
+              folder: newFolder,
+              linkedWaypointPrefix: '${newName}_',
+            ),
+          );
+        }
+      }
+
+      final sortedItems = itemNames.toList()..sort();
+      for (final itemName in sortedItems) {
+        final sourcePath = _pathByName(itemName);
+        if (sourcePath == null || folderNames.contains(sourcePath.folder)) {
+          continue;
+        }
+
+        final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+        existingPathNames.add(newName);
+
+        copiedPaths.add(
+          _copyPathFile(
+            sourcePathName: sourcePath.name,
+            newPathName: newName,
+            folder: sourcePath.folder ?? '',
+            linkedWaypointPrefix: '${newName}_',
+          ),
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _pathFolders.addAll(newFolders);
+        _pathFolders.sort();
+        _paths.addAll(copiedPaths);
+        _sortPaths(_pathSortValue);
+      });
+
+      widget.prefs.setStringList(PrefsKeys.pathFolders, _pathFolders);
+      widget.onFoldersChanged?.call();
+
+      for (final path in copiedPaths) {
+        if (widget.hotReload) {
+          widget.telemetry?.hotReloadPath(path);
+        }
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved ${copiedPaths.length} path copy/copies'
+            '${newFolders.isEmpty ? '' : ' in ${newFolders.length} copied folder(s)'}',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+  Future<void> _saveAsAutoSelectionCopies({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) async {
+    try {
+      final existingAutoNames = _autos.map<String>((auto) => auto.name).toSet();
+      final existingFolderNames = _autoFolders.toSet();
+      final copiedAutos = <PathPlannerAuto>[];
+      final newFolders = <String>[];
+
+      final sortedFolders = folderNames.toList()..sort();
+      for (final sourceFolder in sortedFolders) {
+        final newFolder = _uniqueCopyOfName(sourceFolder, existingFolderNames);
+        existingFolderNames.add(newFolder);
+        newFolders.add(newFolder);
+
+        final sourceAutos = _autos
+            .where((auto) => auto.folder == sourceFolder)
+            .cast<PathPlannerAuto>()
+            .toList()
+          ..sort((a, b) => a.name.compareTo(b.name));
+
+        for (final sourceAuto in sourceAutos) {
+          final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+          existingAutoNames.add(newName);
+
+          final copiedAuto = sourceAuto.duplicate(newName);
+          copiedAuto.folder = newFolder;
+          copiedAuto.saveFile();
+          copiedAutos.add(copiedAuto);
+        }
+      }
+
+      final sortedItems = itemNames.toList()..sort();
+      for (final itemName in sortedItems) {
+        final sourceAuto = _autoByName(itemName);
+        if (sourceAuto == null || folderNames.contains(sourceAuto.folder)) {
+          continue;
+        }
+
+        final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+        existingAutoNames.add(newName);
+
+        final copiedAuto = sourceAuto.duplicate(newName);
+        copiedAuto.folder = sourceAuto.folder;
+        copiedAuto.saveFile();
+        copiedAutos.add(copiedAuto);
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _autoFolders.addAll(newFolders);
+        _autoFolders.sort();
+        _autos.addAll(copiedAutos);
+        _sortAutos(_autoSortValue);
+      });
+
+      widget.prefs.setStringList(PrefsKeys.autoFolders, _autoFolders);
+      widget.onFoldersChanged?.call();
+
+      for (final auto in copiedAutos) {
+        if (widget.hotReload) {
+          widget.telemetry?.hotReloadAuto(auto);
+        }
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved ${copiedAutos.length} auto copy/copies'
+            '${newFolders.isEmpty ? '' : ' in ${newFolders.length} copied folder(s)'}',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+  Future<void> _saveAsPathFolderCopy({
+    required String sourceFolder,
+    required String newFolder,
+  }) async {
+    try {
+      final existingPathNames = _paths.map<String>((path) => path.name).toSet();
+      final copiedPaths = <PathPlannerPath>[];
+
+      final sourcePaths = _paths
+          .where((path) => path.folder == sourceFolder)
+          .cast<PathPlannerPath>()
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+      for (final sourcePath in sourcePaths) {
+        final newName = _uniqueCopyOfName(sourcePath.name, existingPathNames);
+        existingPathNames.add(newName);
+
+        copiedPaths.add(
+          _copyPathFile(
+            sourcePathName: sourcePath.name,
+            newPathName: newName,
+            folder: newFolder,
+            linkedWaypointPrefix: '${newName}_',
+          ),
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        if (!_pathFolders.contains(newFolder)) {
+          _pathFolders.add(newFolder);
+          _pathFolders.sort();
+        }
+
+        _paths.addAll(copiedPaths);
+        _sortPaths(_pathSortValue);
+      });
+
+      widget.prefs.setStringList(PrefsKeys.pathFolders, _pathFolders);
+      widget.onFoldersChanged?.call();
+
+      for (final path in copiedPaths) {
+        if (widget.hotReload) {
+          widget.telemetry?.hotReloadPath(path);
+        }
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved folder "$newFolder" with ${copiedPaths.length} path copy/copies',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+  Future<void> _saveAsAutoFolderCopy({
+    required String sourceFolder,
+    required String newFolder,
+  }) async {
+    try {
+      final existingAutoNames = _autos.map<String>((auto) => auto.name).toSet();
+      final copiedAutos = <PathPlannerAuto>[];
+
+      final sourceAutos = _autos
+          .where((auto) => auto.folder == sourceFolder)
+          .cast<PathPlannerAuto>()
+          .toList()
+        ..sort((a, b) => a.name.compareTo(b.name));
+
+      for (final sourceAuto in sourceAutos) {
+        final newName = _uniqueCopyOfName(sourceAuto.name, existingAutoNames);
+        existingAutoNames.add(newName);
+
+        final copiedAuto = sourceAuto.duplicate(newName);
+        copiedAuto.folder = newFolder;
+        copiedAuto.saveFile();
+        copiedAutos.add(copiedAuto);
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        if (!_autoFolders.contains(newFolder)) {
+          _autoFolders.add(newFolder);
+          _autoFolders.sort();
+        }
+
+        _autos.addAll(copiedAutos);
+        _sortAutos(_autoSortValue);
+      });
+
+      widget.prefs.setStringList(PrefsKeys.autoFolders, _autoFolders);
+      widget.onFoldersChanged?.call();
+
+      for (final auto in copiedAutos) {
+        if (widget.hotReload) {
+          widget.telemetry?.hotReloadAuto(auto);
+        }
+      }
+
+      ScaffoldMessenger.of(this.context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved folder "$newFolder" with ${copiedAutos.length} auto copy/copies',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      if (mounted) {
+        _showSaveAsError(this.context, err.toString());
+      }
+    }
+  }
+
+  void _duplicateBulkSelection({
+    required bool isPathsView,
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    if (isPathsView) {
+      _duplicateBulkPaths(itemNames: itemNames, folderNames: folderNames);
+    } else {
+      _duplicateBulkAutos(itemNames: itemNames, folderNames: folderNames);
+    }
+  }
+
+  void _duplicateBulkPaths({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final existingPathNames = _paths.map<String>((path) => path.name).toSet();
+    final existingFolderNames = _pathFolders.cast<String>().toSet();
+    final copiedPaths = <PathPlannerPath>[];
+    final newFolders = <String>[];
+
+    for (final folderName in folderNames) {
+      final newFolder = _uniqueFolderName(folderName, existingFolderNames);
+      existingFolderNames.add(newFolder);
+      newFolders.add(newFolder);
+
+      final sourcePaths = _paths
+          .where((path) => path.folder == folderName)
+          .cast<PathPlannerPath>()
+          .toList();
+
+      for (final sourcePath in sourcePaths) {
+        final newName = _uniqueCopyName(sourcePath.name, existingPathNames);
+        existingPathNames.add(newName);
+
+        copiedPaths.add(
+          _copyPathFile(
+            sourcePathName: sourcePath.name,
+            newPathName: newName,
+            folder: newFolder,
+            linkedWaypointPrefix: '${newName}_',
+          ),
+        );
+      }
+    }
+
+    for (final itemName in itemNames) {
+      final sourcePath = _pathByName(itemName);
+      if (sourcePath == null || folderNames.contains(sourcePath.folder)) {
+        continue;
+      }
+
+      final newName = _uniqueCopyName(sourcePath.name, existingPathNames);
+      existingPathNames.add(newName);
+
+      copiedPaths.add(
+        _copyPathFile(
+          sourcePathName: sourcePath.name,
+          newPathName: newName,
+          folder: sourcePath.folder ?? '',
+          linkedWaypointPrefix: '',
+        ),
+      );
+    }
+
+    setState(() {
+      _pathFolders.addAll(newFolders);
+      _pathFolders.sort();
+      _paths.addAll(copiedPaths);
+      _sortPaths(_pathSortValue);
+    });
+
+    widget.prefs.setStringList(PrefsKeys.pathFolders, _pathFolders);
+    widget.onFoldersChanged?.call();
+
+    for (final path in copiedPaths) {
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadPath(path);
+      }
+    }
+
+    ScaffoldMessenger.of(this.context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Duplicated ${copiedPaths.length} path(s)'
+          '${newFolders.isEmpty ? '' : ' into ${newFolders.length} folder(s)'}',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _duplicateBulkAutos({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final existingAutoNames = _autos.map<String>((auto) => auto.name).toSet();
+    final existingFolderNames = _autoFolders.cast<String>().toSet();
+    final copiedAutos = <PathPlannerAuto>[];
+    final newFolders = <String>[];
+
+    for (final folderName in folderNames) {
+      final newFolder = _uniqueFolderName(folderName, existingFolderNames);
+      existingFolderNames.add(newFolder);
+      newFolders.add(newFolder);
+
+      final sourceAutos = _autos
+          .where((auto) => auto.folder == folderName)
+          .cast<PathPlannerAuto>()
+          .toList();
+
+      for (final sourceAuto in sourceAutos) {
+        final newName = _uniqueCopyName(sourceAuto.name, existingAutoNames);
+        existingAutoNames.add(newName);
+
+        final copiedAuto = sourceAuto.duplicate(newName);
+        copiedAuto.folder = newFolder;
+        copiedAuto.saveFile();
+        copiedAutos.add(copiedAuto);
+      }
+    }
+
+    for (final itemName in itemNames) {
+      final sourceAuto = _autoByName(itemName);
+      if (sourceAuto == null || folderNames.contains(sourceAuto.folder)) {
+        continue;
+      }
+
+      final newName = _uniqueCopyName(sourceAuto.name, existingAutoNames);
+      existingAutoNames.add(newName);
+
+      final copiedAuto = sourceAuto.duplicate(newName);
+      copiedAuto.folder = sourceAuto.folder;
+      copiedAuto.saveFile();
+      copiedAutos.add(copiedAuto);
+    }
+
+    setState(() {
+      _autoFolders.addAll(newFolders);
+      _autoFolders.sort();
+      _autos.addAll(copiedAutos);
+      _sortAutos(_autoSortValue);
+    });
+
+    widget.prefs.setStringList(PrefsKeys.autoFolders, _autoFolders);
+    widget.onFoldersChanged?.call();
+
+    for (final auto in copiedAutos) {
+      if (widget.hotReload) {
+        widget.telemetry?.hotReloadAuto(auto);
+      }
+    }
+
+    ScaffoldMessenger.of(this.context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Duplicated ${copiedAutos.length} auto(s)'
+          '${newFolders.isEmpty ? '' : ' into ${newFolders.length} folder(s)'}',
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _deleteBulkSelection({
+    required bool isPathsView,
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    if (isPathsView) {
+      _deleteBulkPaths(itemNames: itemNames, folderNames: folderNames);
+    } else {
+      _deleteBulkAutos(itemNames: itemNames, folderNames: folderNames);
+    }
+  }
+
+  void _deleteBulkPaths({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final namesToDelete = <String>{...itemNames};
+
+    for (final path in _paths) {
+      if (folderNames.contains(path.folder)) {
+        namesToDelete.add(path.name);
+      }
+    }
+
+    for (final name in namesToDelete) {
+      _pathByName(name)?.deletePath();
+    }
+
+    setState(() {
+      _paths.removeWhere((path) => namesToDelete.contains(path.name));
+      _pathFolders.removeWhere(folderNames.contains);
+
+      if (_pathFolder != null && folderNames.contains(_pathFolder)) {
+        _pathFolder = null;
+      }
+
+      _refreshAutoMissingPaths();
+      _sortPaths(_pathSortValue);
+    });
+
+    widget.prefs.setStringList(PrefsKeys.pathFolders, _pathFolders);
+    widget.onFoldersChanged?.call();
+
+    ScaffoldMessenger.of(this.context).showSnackBar(
+      SnackBar(
+        content: Text('Deleted ${namesToDelete.length} path(s)'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _deleteBulkAutos({
+    required Set<String> itemNames,
+    required Set<String> folderNames,
+  }) {
+    final namesToDelete = <String>{...itemNames};
+
+    for (final auto in _autos) {
+      if (folderNames.contains(auto.folder)) {
+        namesToDelete.add(auto.name);
+      }
+    }
+
+    for (final name in namesToDelete) {
+      _autoByName(name)?.delete();
+    }
+
+    setState(() {
+      _autos.removeWhere((auto) => namesToDelete.contains(auto.name));
+      _autoFolders.removeWhere(folderNames.contains);
+
+      if (_autoFolder != null && folderNames.contains(_autoFolder)) {
+        _autoFolder = null;
+      }
+
+      _sortAutos(_autoSortValue);
+    });
+
+    widget.prefs.setStringList(PrefsKeys.autoFolders, _autoFolders);
+    widget.onFoldersChanged?.call();
+
+    ScaffoldMessenger.of(this.context).showSnackBar(
+      SnackBar(
+        content: Text('Deleted ${namesToDelete.length} auto(s)'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _refreshAutoMissingPaths() {
+    final allPathNames = _paths.map((path) => path.name).toList();
+
+    for (final auto in _autos) {
+      if (!auto.choreoAuto) {
+        auto.handleMissingPaths(allPathNames);
+      }
+    }
+  }
+
   Widget _buildPathCard(int i, BuildContext context) {
     final pathCard = ProjectItemCard(
       name: _paths[i].name,
@@ -1470,6 +3042,14 @@ class _ProjectPageState extends State<ProjectPage> {
       warningMessage: _paths[i].hasEmptyNamedCommand()
           ? 'Contains a NamedCommand that does not have a command selected'
           : null,
+      selectionMode: _bulkSelectPaths,
+      selected: _selectedBulkPathNames.contains(_paths[i].name),
+      onSelectionChanged: (selected) => _setBulkItemSelected(
+        isPathsView: true,
+        name: _paths[i].name,
+        selected: selected,
+      ),
+      showOptions: !_bulkSelectPaths,
       onDuplicated: () => _duplicatePath(_paths[i]),
       onSaveAs: () => _saveAsPath(_paths[i], context),
       onDeleted: () {
@@ -1486,7 +3066,9 @@ class _ProjectPageState extends State<ProjectPage> {
         }
       },
       onRenamed: (value) => _renamePath(_paths[i], value, context),
-      onOpened: () => _openPath(_paths[i]),
+      onOpened: () => _bulkSelectPaths
+          ? _toggleBulkItem(isPathsView: true, name: _paths[i].name)
+          : _openPath(_paths[i]),
     );
 
     return LayoutBuilder(builder: (context, constraints) {
@@ -1630,7 +3212,8 @@ class _ProjectPageState extends State<ProjectPage> {
     }
 
     if (pathNames.contains(newName)) {
-      showDialog(context: this.context,
+      showDialog(
+          context: this.context,
           builder: (BuildContext context) {
             ColorScheme colorScheme = Theme.of(context).colorScheme;
             return AlertDialog(
@@ -1847,6 +3430,14 @@ class _ProjectPageState extends State<ProjectPage> {
                                   child: InkWell(
                                     borderRadius: BorderRadius.circular(12),
                                     onTap: () {
+                                      if (_bulkSelectAutos) {
+                                        _toggleBulkFolder(
+                                          isPathsView: false,
+                                          folderName: _autoFolders[i],
+                                        );
+                                        return;
+                                      }
+
                                       setState(() {
                                         _autoFolder = _autoFolders[i];
                                       });
@@ -1858,6 +3449,13 @@ class _ProjectPageState extends State<ProjectPage> {
                                         children: [
                                           Icon(
                                             Icons.folder_outlined,
+                                            color: candidates.isNotEmpty
+                                                ? colorScheme.onPrimary
+                                                : null,
+                                          ),
+                                          _buildFolderSelectionCheckbox(
+                                            isPathsView: false,
+                                            folderName: _autoFolders[i],
                                             color: candidates.isNotEmpty
                                                 ? colorScheme.onPrimary
                                                 : null,
@@ -1879,7 +3477,8 @@ class _ProjectPageState extends State<ProjectPage> {
                                                       _autoFolders[i]) {
                                                     if (_autoFolders
                                                         .contains(newName)) {
-                                                      showDialog(context: this.context,
+                                                      showDialog(
+                                                          context: this.context,
                                                           builder: (BuildContext
                                                               context) {
                                                             ColorScheme
@@ -1991,6 +3590,14 @@ class _ProjectPageState extends State<ProjectPage> {
       compact: _autosCompact,
       fieldImage: widget.fieldImage,
       choreoItem: _autos[i].choreoAuto,
+      selectionMode: _bulkSelectAutos,
+      selected: _selectedBulkAutoNames.contains(_autos[i].name),
+      onSelectionChanged: (selected) => _setBulkItemSelected(
+        isPathsView: false,
+        name: _autos[i].name,
+        selected: selected,
+      ),
+      showOptions: !_bulkSelectAutos,
       paths: _autos[i].choreoAuto
           ? [
               for (ChoreoPath path
@@ -2012,6 +3619,11 @@ class _ProjectPageState extends State<ProjectPage> {
       },
       onRenamed: (value) => _renameAuto(i, value, context),
       onOpened: () async {
+        if (_bulkSelectAutos) {
+          _toggleBulkItem(isPathsView: false, name: _autos[i].name);
+          return;
+        }
+
         String? pathNameToOpen = await Navigator.push<String?>(
           context,
           MaterialPageRoute(
@@ -2029,20 +3641,20 @@ class _ProjectPageState extends State<ProjectPage> {
               shortcuts: widget.shortcuts,
               telemetry: widget.telemetry,
               hotReload: widget.hotReload,
-                                  pathDir: _pathsDirectory.path,
-                      onAutoSaved: () {
-                        if (mounted) {
-                          setState(() {
-                            _sortAutos(_autoSortValue);
-                          });
-                        }
-                      },
-                      onPathsChanged: () {
-                        if (mounted) {
-                          _load();
-                        }
-                      },
-),
+              pathDir: _pathsDirectory.path,
+              onAutoSaved: () {
+                if (mounted) {
+                  setState(() {
+                    _sortAutos(_autoSortValue);
+                  });
+                }
+              },
+              onPathsChanged: () {
+                if (mounted) {
+                  _load();
+                }
+              },
+            ),
           ),
         );
         setState(() {
@@ -2114,6 +3726,8 @@ class _ProjectPageState extends State<ProjectPage> {
               _buildExportAllPathsButton(),
               const SizedBox(width: 8),
             ],
+            _buildBulkActionsButton(isPathsView: isPathsView),
+            const SizedBox(width: 8),
             _buildFolderButton(
               isPathsView: isPathsView,
               onAddFolder: onAddFolder,
@@ -2182,9 +3796,17 @@ class _ProjectPageState extends State<ProjectPage> {
                 );
               },
             ),
-            const SizedBox(width: 8), if (!isPathsView) _buildAutoStudioButton(), if (!isPathsView) const SizedBox(width: 8), _buildAddButton( isPathsView: isPathsView, onAddItem: onAddItem, ), const SizedBox(width: 8),
+            const SizedBox(width: 8),
+            if (!isPathsView) _buildAutoStudioButton(),
+            if (!isPathsView) const SizedBox(width: 8),
+            _buildAddButton(
+              isPathsView: isPathsView,
+              onAddItem: onAddItem,
+            ),
+            const SizedBox(width: 8),
           ],
         ),
+        _buildBulkActionsRow(isPathsView: isPathsView),
         const SizedBox(height: 10),
       ]),
     );
@@ -2280,8 +3902,9 @@ class _ProjectPageState extends State<ProjectPage> {
           for (final path in _paths) path.name,
           for (final path in _choreoPaths) path.name,
         ],
-                pathDir: _pathsDirectory.path,
-fieldImage: widget.fieldImage,
+        pathDir: _pathsDirectory.path,
+        initialAutoFolder: _autoFolder,
+        fieldImage: widget.fieldImage,
         undoStack: widget.undoStack,
         telemetry: widget.telemetry,
         hotReload: widget.hotReload,
@@ -2289,6 +3912,8 @@ fieldImage: widget.fieldImage,
           final autoIdx = _autos.indexWhere((item) => identical(item, auto));
           if (autoIdx >= 0) {
             _renameAuto(autoIdx, value, this.context);
+            _autos[autoIdx].folder = _autoFolder;
+            _autos[autoIdx].saveFile();
           }
         },
         onAutoSaved: () {
@@ -2319,10 +3944,10 @@ fieldImage: widget.fieldImage,
       autoNames.add(auto.name);
     }
 
-    var autoName = 'New Battlecry Auto';
+    var autoName = 'New Frenzy Auto';
     var copyIndex = 2;
     while (autoNames.contains(autoName)) {
-      autoName = 'New Battlecry Auto $copyIndex';
+      autoName = 'New Frenzy Auto $copyIndex';
       copyIndex++;
     }
 
@@ -2344,7 +3969,7 @@ fieldImage: widget.fieldImage,
 
   Widget _buildAutoStudioButton() {
     return IconButton.filledTonal(
-      tooltip: 'Open Battlecry Auto Studio',
+      tooltip: 'Open Frenzy Auto Studio',
       icon: const Icon(Icons.auto_awesome_motion_rounded),
       onPressed: _openAutoStudio,
     );
@@ -2476,6 +4101,56 @@ fieldImage: widget.fieldImage,
     return paths;
   }
 
+  Future<void> _safeRenameOrRemoveExistingProjectFile(
+    dynamic sourceFile,
+    String targetPath,
+  ) async {
+    if (sourceFile.path == targetPath) {
+      return;
+    }
+
+    dynamic targetFile;
+    try {
+      targetFile = sourceFile.fileSystem.file(targetPath);
+    } catch (_) {
+      targetFile = null;
+    }
+
+    try {
+      if (targetFile != null && await targetFile.exists()) {
+        if (await sourceFile.exists()) {
+          await sourceFile.delete();
+        }
+        return;
+      }
+
+      if (await sourceFile.exists()) {
+        await sourceFile.rename(targetPath);
+      }
+    } catch (_) {
+      if (targetFile != null && await targetFile.exists()) {
+        if (await sourceFile.exists()) {
+          await sourceFile.delete();
+        }
+        return;
+      }
+
+      if (await sourceFile.exists()) {
+        try {
+          if (targetFile != null) {
+            await sourceFile.copy(targetPath);
+            await sourceFile.delete();
+            return;
+          }
+        } catch (_) {
+          rethrow;
+        }
+      }
+
+      rethrow;
+    }
+  }
+
   void _renameAuto(int autoIdx, String newName, BuildContext context) {
     List<String> autoNames = [];
     for (PathPlannerAuto auto in _autos) {
@@ -2483,7 +4158,8 @@ fieldImage: widget.fieldImage,
     }
 
     if (autoNames.contains(newName)) {
-      showDialog(context: this.context,
+      showDialog(
+          context: this.context,
           builder: (BuildContext context) {
             ColorScheme colorScheme = Theme.of(context).colorScheme;
             return AlertDialog(

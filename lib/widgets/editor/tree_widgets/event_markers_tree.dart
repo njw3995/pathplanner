@@ -22,6 +22,7 @@ class EventMarkersTree extends StatefulWidget {
   final VoidCallback? onPathChangedNoSim;
   final ValueChanged<int?>? onMarkerHovered;
   final ValueChanged<int?>? onMarkerSelected;
+  final ValueChanged<int>? onMarkerSplit;
   final int? initiallySelectedMarker;
   final ChangeStack undoStack;
 
@@ -31,6 +32,7 @@ class EventMarkersTree extends StatefulWidget {
     this.onPathChangedNoSim,
     this.onMarkerHovered,
     this.onMarkerSelected,
+    this.onMarkerSplit,
     this.initiallySelectedMarker,
     required this.undoStack,
   });
@@ -280,6 +282,16 @@ class _EventMarkersTreeState extends State<EventMarkersTree> {
               value: markers[markerIdx].endWaypointRelativePos == null
                   ? markers[markerIdx].waypointRelativePos.toStringAsFixed(2)
                   : '${markers[markerIdx].waypointRelativePos.toStringAsFixed(2)}-${markers[markerIdx].endWaypointRelativePos!.toStringAsFixed(2)}'),
+          IconButton(
+            icon: const Icon(Icons.call_split_rounded),
+            color: markers[markerIdx].isZoned
+                ? colorScheme.onSurface.withAlpha(90)
+                : colorScheme.primary,
+            onPressed: markers[markerIdx].isZoned
+                ? null
+                : () => widget.onMarkerSplit?.call(markerIdx),
+          ),
+          const SizedBox(width: 4),
           Tooltip(
             message: 'Delete Marker',
             waitDuration: const Duration(seconds: 1),

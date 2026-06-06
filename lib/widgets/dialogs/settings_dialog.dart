@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pathplanner/widgets/app_settings.dart';
 import 'package:pathplanner/widgets/field_image.dart';
 import 'package:pathplanner/widgets/robot_config_settings.dart';
+import 'package:pathplanner/util/prefs.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsDialog extends StatelessWidget {
@@ -27,7 +28,7 @@ class SettingsDialog extends StatelessWidget {
     ColorScheme colorScheme = Theme.of(context).colorScheme;
 
     return DefaultTabController(
-      length: 2,
+      length: 3,
       child: AlertDialog(
         backgroundColor: colorScheme.surface,
         surfaceTintColor: colorScheme.surfaceTint,
@@ -38,6 +39,9 @@ class SettingsDialog extends StatelessWidget {
             ),
             Tab(
               text: 'App Settings',
+            ),
+            Tab(
+              text: 'Frenzy',
             ),
           ],
         ),
@@ -59,6 +63,10 @@ class SettingsDialog extends StatelessWidget {
                 prefs: prefs,
                 onTeamColorChanged: onTeamColorChanged,
               ),
+              FrenzySettings(
+                prefs: prefs,
+                onSettingsChanged: onSettingsChanged,
+              ),
             ],
           ),
         ),
@@ -69,6 +77,53 @@ class SettingsDialog extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class FrenzySettings extends StatefulWidget {
+  final SharedPreferences prefs;
+  final VoidCallback onSettingsChanged;
+
+  const FrenzySettings({
+    required this.prefs,
+    required this.onSettingsChanged,
+    super.key,
+  });
+
+  @override
+  State<FrenzySettings> createState() => _FrenzySettingsState();
+}
+
+class _FrenzySettingsState extends State<FrenzySettings> {
+  late bool _hasFrenzyDot;
+
+  @override
+  void initState() {
+    super.initState();
+    _hasFrenzyDot =
+        widget.prefs.getBool(PrefsKeys.hasFrenzyDot) ?? Defaults.hasFrenzyDot;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        SwitchListTile(
+          title: const Text('Has Frenzy Dot?'),
+          subtitle: const Text(
+            'Show the Final Dot options in Frenzy Auto Studio.',
+          ),
+          value: _hasFrenzyDot,
+          onChanged: (value) {
+            setState(() {
+              _hasFrenzyDot = value;
+            });
+            widget.prefs.setBool(PrefsKeys.hasFrenzyDot, value);
+            widget.onSettingsChanged();
+          },
+        ),
+      ],
     );
   }
 }

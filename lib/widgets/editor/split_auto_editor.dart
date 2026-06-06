@@ -68,9 +68,17 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
 
   final MultiSplitViewController _controller = MultiSplitViewController();
   final CollabServer _collabServer = CollabServer();
-  final TextEditingController _collabHostPasswordController = TextEditingController();
+  final TextEditingController _collabHostPasswordController =
+      TextEditingController();
   Map<String, Map<String, dynamic>> _collabTeamStates = {};
   final Set<String> _hiddenCollabTeamAutoKeys = {};
+  bool _collabLocalOnlyTeamUploads = true;
+  final Map<String, int> _savedCollabAutoSignatures = {};
+  final Map<String, bool> _collabTeamAutoFlipped = {};
+  final Map<String, List<String>> _collabImportedFilePathsByTeam = {};
+  bool _collabArchiveImportedFiles = true;
+  bool _collabFlipUploadsBottomTop = false;
+  final Map<String, String> _collabTeamGhostOverlayNames = {};
   List<Map<String, dynamic>> _collabBrowserMarkups = [];
   StateSetter? _ghostOverlayDialogSetState;
   List<String> _collabLanUrls = [];
@@ -174,8 +182,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                         previewTotalTimeSeconds: _totalPreviewTimeSeconds(),
                         animation: _previewController.view,
                         prefs: widget.prefs,
-                          collabMarkups: _collabBrowserMarkups,
-                          collabTeamAutos: _visibleCollabTeamAutos(),
+                        collabMarkups: _collabBrowserMarkups,
+                        collabTeamAutos: const [],
                       ),
                     ),
                   ),
@@ -273,8 +281,9 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                     onEditPathPressed: widget.onEditPathPressed,
                     onImportAutoToStudio: widget.onImportAutoToStudio,
                     onManageGhostOverlays: _showGhostOverlayDialog,
-                    ghostOverlayCount:
-                        _ghostOverlays.where((overlay) => overlay.visible).length,
+                    ghostOverlayCount: _ghostOverlays
+                        .where((overlay) => overlay.visible)
+                        .length,
                   ),
                 ),
               ),
@@ -364,7 +373,6 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     if (!_paused && wasAnimating) {
       _previewController.repeat();
     }
-  
 
     _publishCollabSnapshot();
   }
@@ -508,10 +516,10 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                               .toDouble(),
                           top: 3,
                           bottom: 3,
-                          width: ((segment.durationSeconds / totalSeconds) *
-                                  width)
-                              .clamp(2.0, width)
-                              .toDouble(),
+                          width:
+                              ((segment.durationSeconds / totalSeconds) * width)
+                                  .clamp(2.0, width)
+                                  .toDouble(),
                           child: Tooltip(
                             message:
                                 '${segment.label}: ${segment.startSeconds.toStringAsFixed(2)}s to ${(segment.startSeconds + segment.durationSeconds).toStringAsFixed(2)}s',
@@ -629,7 +637,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
 
     setState(() {
       overlay.visible = active;
-    _publishCollabSnapshot();
+      _publishCollabSnapshot();
     });
     _refreshPreviewDuration();
     dialogSetState(() {});
@@ -850,7 +858,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     return _collabLanUrls.first;
   }
 
-    String _collabSessionSubtitle() {
+  String _collabSessionSubtitle() {
     if (!_collabServer.isRunning) {
       return 'Stopped. Start to let others view this plan in a browser.';
     }
@@ -1014,6 +1022,602 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     return true;
   }
 
+  String _safeCollabFileName(Object? raw, {String fallback = 'Uploaded Auto'}) {
+    final source = raw?.toString() ?? fallback;
+    var cleaned = source.replaceAll(RegExp(r'[\\/:*?"<>|]+'), '_').trim();
+    cleaned = cleaned.replaceAll(RegExp(r'\s+'), ' ');
+    return cleaned.isEmpty ? fallback : cleaned;
+  }
+
+  String _collabAutosDir() {
+    return p.join(p.dirname(widget.pathDir), 'autos');
+  }
+
+  String _teamPrefixedName(String teamKey, Object? rawName) {
+    final safeTeam = _safeCollabFileName(teamKey, fallback: 'Team');
+    final safeName = _safeCollabFileName(rawName, fallback: 'Uploaded Auto');
+
+    if (safeName == safeTeam || safeName.startsWith('\${safeTeam}_')) {
+      return safeName;
+    }
+
+    return '\${safeTeam}_$safeName';
+  }
+
+  void _rewriteUploadedAutoPathNames(
+    dynamic node,
+    Map<String, String> pathNameMap,
+  ) {
+    if (node is List) {
+      for (final item in node) {
+        _rewriteUploadedAutoPathNames(item, pathNameMap);
+      }
+      return;
+    }
+
+    if (node is! Map) {
+      return;
+    }
+
+    for (final entry in List<MapEntry>.from(node.entries)) {
+      final key = entry.key;
+      final value = entry.value;
+
+      if (key == 'pathName' &&
+          value is String &&
+          pathNameMap.containsKey(value)) {
+        node[key] = pathNameMap[value];
+      } else {
+        _rewriteUploadedAutoPathNames(value, pathNameMap);
+      }
+    }
+  }
+
+  Map<String, dynamic>? _copyRawJsonMap(Object? raw) {
+    if (raw is Map) {
+      return Map<String, dynamic>.from(raw);
+    }
+
+    return null;
+  }
+
+  Map<String, Map<String, dynamic>> _copyRawPathJsons(Object? raw) {
+    final result = <String, Map<String, dynamic>>{};
+
+    if (raw is! Map) {
+      return result;
+    }
+
+    for (final entry in raw.entries) {
+      final key = entry.key;
+      final value = entry.value;
+
+      if (key is String && value is Map) {
+        result[key] = Map<String, dynamic>.from(value);
+      }
+    }
+
+    return result;
+  }
+
+  Map<String, String>? _saveCollabUploadedAutoFiles({
+    required String teamKey,
+    required String autoName,
+    required Map<String, dynamic> autoJson,
+    required Map<String, Map<String, dynamic>> pathJsons,
+  }) {
+    _archiveOrDeleteCollabImportedFilesForTeam(teamKey);
+
+    final writtenFilePaths = <String>[];
+    final autosDir = Directory(_collabAutosDir());
+    final pathsDir = Directory(widget.pathDir);
+
+    autosDir.createSync(recursive: true);
+    pathsDir.createSync(recursive: true);
+
+    final pathNameMap = <String, String>{};
+    const encoder = JsonEncoder.withIndent('  ');
+
+    for (final entry in pathJsons.entries) {
+      final originalPathName = entry.key;
+      final savedPathName = _teamPrefixedName(teamKey, originalPathName);
+      pathNameMap[originalPathName] = savedPathName;
+
+      final pathJson = Map<String, dynamic>.from(entry.value);
+      pathJson['useDefaultConstraints'] = false;
+      final pathFile = File(p.join(widget.pathDir, '$savedPathName.path'));
+      pathFile.writeAsStringSync('${encoder.convert(pathJson)}\n');
+    }
+
+    final savedAutoName = _teamPrefixedName(teamKey, autoName);
+    final savedAutoJson = Map<String, dynamic>.from(autoJson);
+    _rewriteUploadedAutoPathNames(savedAutoJson, pathNameMap);
+
+    final autoFile = File(p.join(_collabAutosDir(), '$savedAutoName.auto'));
+    autoFile.writeAsStringSync('${encoder.convert(savedAutoJson)}\n');
+
+    return {
+      'autoName': savedAutoName,
+      'autoPath': autoFile.path,
+      'pathCount': pathNameMap.length.toString(),
+    };
+  }
+
+  List<PathPlannerPath> _loadCollabProjectPathsWithGuiModel() {
+    final paths = <PathPlannerPath>[];
+    final dir = Directory(widget.pathDir);
+
+    if (!dir.existsSync()) {
+      return paths;
+    }
+
+    for (final entity in dir.listSync()) {
+      if (entity is! File || !entity.path.toLowerCase().endsWith('.path')) {
+        continue;
+      }
+
+      try {
+        final decoded = jsonDecode(entity.readAsStringSync());
+        if (decoded is! Map) {
+          continue;
+        }
+
+        final pathName = p.basenameWithoutExtension(entity.path);
+        final pathJson = Map<String, dynamic>.from(decoded);
+        final path = PathPlannerPath.fromJson(
+          pathJson,
+          pathName,
+          widget.pathDir,
+          widget.auto.fs,
+        );
+        path.lastModified = entity.lastModifiedSync().toUtc();
+        paths.add(path);
+      } catch (err) {
+        Log.warning(
+            'Failed to load collab path for GUI render: ${entity.path}: $err');
+      }
+    }
+
+    return paths;
+  }
+
+  Map<String, dynamic> _renderSavedCollabAutoWithPathPlannerGui({
+    required String teamKey,
+    required String visibleAutoName,
+    required String savedAutoName,
+    required Map<String, dynamic> existingPayload,
+  }) {
+    final rendered = Map<String, dynamic>.from(existingPayload)
+      ..['name'] = savedAutoName
+      ..['sourceName'] = visibleAutoName
+      ..['hostSavedAutoName'] = savedAutoName
+      ..['hostGuiRendered'] = false;
+
+    try {
+      final autoFile = File(p.join(_collabAutosDir(), '$savedAutoName.auto'));
+      if (!autoFile.existsSync()) {
+        rendered['hostGuiRenderError'] =
+            'Saved auto file does not exist: ${autoFile.path}';
+        return rendered;
+      }
+
+      final decoded = jsonDecode(autoFile.readAsStringSync());
+      if (decoded is! Map) {
+        rendered['hostGuiRenderError'] = 'Saved auto JSON was not an object.';
+        return rendered;
+      }
+
+      final auto = PathPlannerAuto.fromJson(
+        Map<String, dynamic>.from(decoded),
+        savedAutoName,
+        _collabAutosDir(),
+        widget.auto.fs,
+      );
+
+      if (auto.choreoAuto) {
+        rendered['hostGuiRenderError'] =
+            'Choreo autos are not supported for browser team auto overlays yet.';
+        return rendered;
+      }
+
+      final allPaths = _loadCollabProjectPathsWithGuiModel();
+      final pathsByName = <String, PathPlannerPath>{
+        for (final path in allPaths) path.name: path,
+      };
+
+      final resolvedPaths = <PathPlannerPath>[];
+      final missingPaths = <String>[];
+
+      for (final pathName in auto.getAllPathNames()) {
+        final path = pathsByName[pathName];
+        if (path == null) {
+          missingPaths.add(pathName);
+        } else {
+          resolvedPaths.add(path);
+        }
+      }
+
+      rendered['missingPaths'] = missingPaths;
+
+      if (resolvedPaths.isEmpty) {
+        rendered['hostGuiRenderError'] =
+            'No referenced PathPlanner paths could be loaded for $savedAutoName.';
+        return rendered;
+      }
+
+      final config = RobotConfig.fromPrefs(widget.prefs);
+      final trajectory = AutoSimulator.simulateAuto(resolvedPaths, config);
+
+      if (trajectory == null) {
+        rendered['hostGuiRenderError'] =
+            'PathPlanner AutoSimulator returned no trajectory.';
+        return rendered;
+      }
+
+      final totalSeconds = trajectory.getTotalTimeSeconds().toDouble();
+      if (trajectory.states.isEmpty ||
+          !totalSeconds.isFinite ||
+          totalSeconds <= 0.0) {
+        rendered['hostGuiRenderError'] =
+            'PathPlanner generated an empty or invalid trajectory.';
+        return rendered;
+      }
+
+      final samples = _samplesFromPathPlannerGuiTrajectory(trajectory);
+      if (samples.length < 2) {
+        rendered['hostGuiRenderError'] =
+            'PathPlanner trajectory did not produce enough drawable samples.';
+        return rendered;
+      }
+
+      rendered['samples'] = samples;
+      rendered['nativeSeconds'] = totalSeconds;
+      rendered['totalSeconds'] = totalSeconds;
+      rendered['segments'] = [
+        {
+          'startSeconds': 0.0,
+          'durationSeconds': totalSeconds,
+          'label': 'PathPlanner GUI',
+          'type': 'drive',
+          'isPause': false,
+        }
+      ];
+      rendered['hostGuiRendered'] = true;
+      rendered.remove('hostGuiRenderError');
+
+      return rendered;
+    } catch (err, stack) {
+      Log.warning(
+        'Failed to render collab uploaded auto through PathPlanner GUI: $teamKey / $savedAutoName',
+        err,
+        stack,
+      );
+      rendered['hostGuiRenderError'] = err.toString();
+      return rendered;
+    }
+  }
+
+  List<Map<String, dynamic>> _samplesFromPathPlannerGuiTrajectory(
+    PathPlannerTrajectory trajectory,
+  ) {
+    final totalSeconds = trajectory.getTotalTimeSeconds().toDouble();
+    final samples = <Map<String, dynamic>>[];
+
+    if (!totalSeconds.isFinite || totalSeconds <= 0.0) {
+      return samples;
+    }
+
+    const sampleStepSeconds = 0.05;
+
+    void addSample(double timeSeconds) {
+      final clampedTime = timeSeconds.clamp(0.0, totalSeconds).toDouble();
+      final state = trajectory.sample(clampedTime);
+      final dynamic stateDynamic = state;
+      final dynamic pose = stateDynamic.pose;
+      final dynamic translation = pose.translation;
+      final dynamic rotation = pose.rotation;
+
+      samples.add({
+        't': clampedTime,
+        'x': _normalizeCollabGuiX(translation.x as num),
+        'y': _normalizeCollabGuiY(translation.y as num),
+        'theta': (rotation.radians as num).toDouble(),
+      });
+    }
+
+    for (double t = 0.0; t < totalSeconds; t += sampleStepSeconds) {
+      addSample(t);
+    }
+
+    addSample(totalSeconds);
+    return samples;
+  }
+
+  double _normalizeCollabGuiX(num xMeters) {
+    final widthPixels = widget.fieldImage.defaultSize.width.toDouble();
+    if (widthPixels <= 0.0) {
+      return 0.0;
+    }
+
+    final xPixels = (xMeters + widget.fieldImage.marginMeters) *
+        widget.fieldImage.pixelsPerMeter;
+    return (xPixels / widthPixels).clamp(0.0, 1.0).toDouble();
+  }
+
+  double _normalizeCollabGuiY(num yMeters) {
+    final heightPixels = widget.fieldImage.defaultSize.height.toDouble();
+    if (heightPixels <= 0.0) {
+      return 0.0;
+    }
+
+    final yPixels = heightPixels -
+        ((yMeters + widget.fieldImage.marginMeters) *
+            widget.fieldImage.pixelsPerMeter);
+    return (yPixels / heightPixels).clamp(0.0, 1.0).toDouble();
+  }
+
+  void _saveBrowserUploadedTeamAuto(Map<String, dynamic> team) {
+    final teamKey = team['key'];
+    final autoRaw = team['auto'];
+
+    if (teamKey is! String || teamKey.isEmpty || autoRaw is! Map) {
+      return;
+    }
+
+    final auto = Map<String, dynamic>.from(autoRaw);
+    final sourceAutoJson = _copyRawJsonMap(auto['sourceAutoJson']);
+    final sourcePathJsons = _copyRawPathJsons(auto['sourcePathJsons']);
+
+    if (sourceAutoJson == null || sourcePathJsons.isEmpty) {
+      return;
+    }
+
+    final autoName = auto['name']?.toString() ?? 'Uploaded Auto';
+    final signature = jsonEncode({
+      'teamKey': teamKey,
+      'autoName': autoName,
+      'auto': sourceAutoJson,
+      'paths': sourcePathJsons.keys.toList()..sort(),
+    }).hashCode;
+
+    if (_savedCollabAutoSignatures[teamKey] == signature) {
+      final savedAutoName = _teamPrefixedName(teamKey, autoName);
+      final overlay = _ensureCollabSavedAutoGhostOverlay(
+        teamKey: teamKey,
+        savedAutoName: savedAutoName,
+        color: team['color'],
+      );
+
+      if (overlay != null) {
+        auto['hostSavedAutoName'] = savedAutoName;
+        auto['hostGhostOverlayName'] = overlay.name;
+        auto['hostRenderedByGhostOverlay'] = true;
+        auto.remove('samples');
+        auto.remove('segments');
+        team['auto'] = auto;
+      }
+
+      return;
+    }
+
+    try {
+      final saved = _saveCollabUploadedAutoFiles(
+        teamKey: teamKey,
+        autoName: autoName,
+        autoJson: sourceAutoJson,
+        pathJsons: sourcePathJsons,
+      );
+
+      if (saved == null) {
+        return;
+      }
+
+      final savedAutoName =
+          saved['autoName'] ?? _teamPrefixedName(teamKey, autoName);
+
+      auto['hostSavedAutoName'] = savedAutoName;
+      auto['hostSavedAutoPath'] = saved['autoPath'];
+      auto['hostSavedPathCount'] = int.tryParse(saved['pathCount'] ?? '0') ?? 0;
+
+      final overlay = _ensureCollabSavedAutoGhostOverlay(
+        teamKey: teamKey,
+        savedAutoName: savedAutoName,
+        color: team['color'],
+      );
+
+      if (overlay == null) {
+        auto['hostGuiRenderError'] =
+            'Saved auto was written, but PathPlanner could not generate a host overlay.';
+      } else {
+        auto['hostGhostOverlayName'] = overlay.name;
+        auto['hostRenderedByGhostOverlay'] = true;
+        auto.remove('samples');
+        auto.remove('segments');
+      }
+
+      team['auto'] = auto;
+      _savedCollabAutoSignatures[teamKey] = signature;
+    } catch (err) {
+      auto['hostSaveError'] = err.toString();
+      team['auto'] = auto;
+    }
+  }
+
+  Future<void> _importLocalCollabTeamAuto() async {
+    final teamController = TextEditingController();
+
+    final teamKey = await showDialog<String>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Upload Local Team Auto'),
+          content: SizedBox(
+            width: 420,
+            child: TextField(
+              controller: teamController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Team number',
+                hintText: 'Example: 190, 516, 5940',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (value) {
+                Navigator.of(context).pop(value.trim());
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(context).pop(teamController.text.trim()),
+              child: const Text('Choose Files'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (teamKey == null || teamKey.trim().isEmpty || !mounted) {
+      return;
+    }
+
+    const typeGroup = XTypeGroup(
+      label: 'PathPlanner auto and paths',
+      extensions: ['auto', 'path'],
+    );
+
+    final files = await openFiles(
+      acceptedTypeGroups: [typeGroup],
+      initialDirectory: widget.pathDir,
+    );
+
+    if (files.isEmpty || !mounted) {
+      return;
+    }
+
+    final autoFiles = files
+        .where((file) => file.path.toLowerCase().endsWith('.auto'))
+        .toList();
+    final pathFiles = files
+        .where((file) => file.path.toLowerCase().endsWith('.path'))
+        .toList();
+
+    if (autoFiles.length != 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Select exactly one .auto file plus its referenced .path files.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    try {
+      final autoFile = File(autoFiles.first.path);
+      final autoJson = Map<String, dynamic>.from(
+        jsonDecode(autoFile.readAsStringSync()) as Map,
+      );
+
+      final referencedPathNames =
+          _extractUploadedAutoPathNames(autoJson).toSet();
+      final pathJsons = <String, Map<String, dynamic>>{};
+      for (final selectedPath in pathFiles) {
+        final file = File(selectedPath.path);
+        final name = p.basenameWithoutExtension(file.path);
+        if (referencedPathNames.isNotEmpty &&
+            !referencedPathNames.contains(name)) {
+          continue;
+        }
+        pathJsons[name] = Map<String, dynamic>.from(
+          jsonDecode(file.readAsStringSync()) as Map,
+        );
+      }
+
+      final importedName = p.basenameWithoutExtension(autoFile.path);
+      final saved = _saveCollabUploadedAutoFiles(
+        teamKey: teamKey.trim(),
+        autoName: importedName,
+        autoJson: autoJson,
+        pathJsons: pathJsons,
+      );
+
+      if (saved == null) {
+        return;
+      }
+
+      final autoPayload = <String, dynamic>{
+        'name': importedName,
+        'totalSeconds': 0.0,
+        'nativeSeconds': 0.0,
+        'waitCount': 0,
+        'samples': <Map<String, dynamic>>[],
+        'segments': <Map<String, dynamic>>[],
+        'localOnly': true,
+        'hostSavedAutoName': saved['autoName'],
+        'hostSavedAutoPath': saved['autoPath'],
+        'hostSavedPathCount': int.tryParse(saved['pathCount'] ?? '0') ?? 0,
+      };
+
+      final savedAutoName =
+          saved['autoName'] ?? _teamPrefixedName(teamKey.trim(), importedName);
+      final overlay = _ensureCollabSavedAutoGhostOverlay(
+        teamKey: teamKey.trim(),
+        savedAutoName: savedAutoName,
+        color: null,
+      );
+
+      if (overlay == null) {
+        autoPayload['hostGuiRenderError'] =
+            'Saved auto was written, but PathPlanner could not generate a host overlay.';
+      } else {
+        autoPayload['hostGhostOverlayName'] = overlay.name;
+        autoPayload['hostRenderedByGhostOverlay'] = true;
+        autoPayload.remove('samples');
+        autoPayload.remove('segments');
+      }
+
+      setState(() {
+        final team = Map<String, dynamic>.from(
+          _collabTeamStates[teamKey.trim()] ?? const <String, dynamic>{},
+        );
+
+        team['key'] = teamKey.trim();
+        team['claimed'] = true;
+        team['claimedBy'] = 'Host local import';
+        team['color'] = team['color'] ?? '#ff4fd8';
+        team['auto'] = autoPayload;
+        _collabTeamStates[teamKey.trim()] = team;
+      });
+
+      try {
+        _ghostOverlayDialogSetState?.call(() {});
+      } catch (_) {
+        _ghostOverlayDialogSetState = null;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Saved local team auto ${saved['autoName']}.auto with ${saved['pathCount']} path file(s).',
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (err) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not import local team auto: $err'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   void _handleCollabTeamsChanged(Map<String, dynamic> payload) {
     final teamsRaw = payload['teams'];
     final next = <String, Map<String, dynamic>>{};
@@ -1029,6 +1633,18 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         if (key is String && key.isNotEmpty) {
           next[key] = team;
         }
+      }
+    }
+
+    for (final team in next.values) {
+      _saveBrowserUploadedTeamAuto(team);
+      _syncCollabTeamOverlayFromTeam(team);
+    }
+
+    for (final key in List<String>.of(_collabImportedFilePathsByTeam.keys)) {
+      final team = next[key];
+      if (team == null || team['auto'] is! Map) {
+        _archiveOrDeleteCollabImportedFilesForTeam(key);
       }
     }
 
@@ -1049,6 +1665,294 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     } catch (_) {
       _ghostOverlayDialogSetState = null;
     }
+  }
+
+  List<String> _extractUploadedAutoPathNames(Map<String, dynamic> autoJson) {
+    final names = <String>{};
+
+    void visit(dynamic node) {
+      if (node is List) {
+        for (final item in node) {
+          visit(item);
+        }
+        return;
+      }
+
+      if (node is! Map) {
+        return;
+      }
+
+      final pathName = node['pathName'];
+      if (pathName is String && pathName.trim().isNotEmpty) {
+        names.add(pathName.trim());
+      }
+
+      for (final value in node.values) {
+        visit(value);
+      }
+    }
+
+    visit(autoJson);
+    return names.toList()..sort();
+  }
+
+  String _collabArchiveDir() {
+    final pathplannerDir = p.dirname(widget.pathDir);
+    final deployDir = p.dirname(pathplannerDir);
+    return p.join(deployDir, 'pathplanner_collab_archive');
+  }
+
+  String _collabArchiveStamp() {
+    final now = DateTime.now();
+    String two(int value) => value.toString().padLeft(2, '0');
+
+    return '${now.year}${two(now.month)}${two(now.day)}_'
+        '${two(now.hour)}${two(now.minute)}${two(now.second)}';
+  }
+
+  void _archiveOrDeleteCollabImportedFilesForTeam(String teamKey) {
+    final paths = _collabImportedFilePathsByTeam.remove(teamKey);
+
+    final overlayName = _collabTeamGhostOverlayNames.remove(teamKey);
+    if (overlayName != null) {
+      _ghostOverlays.removeWhere((overlay) => overlay.name == overlayName);
+    }
+
+    if (paths == null || paths.isEmpty) {
+      return;
+    }
+
+    final archiveDir = Directory(
+      p.join(
+        _collabArchiveDir(),
+        _collabArchiveStamp(),
+        _safeCollabFileName(teamKey),
+      ),
+    );
+
+    for (final rawPath in paths) {
+      try {
+        final file = File(rawPath);
+        if (!file.existsSync()) {
+          continue;
+        }
+
+        if (_collabArchiveImportedFiles) {
+          archiveDir.createSync(recursive: true);
+          final target = File(p.join(archiveDir.path, p.basename(file.path)));
+
+          if (target.existsSync()) {
+            target.deleteSync();
+          }
+
+          file.renameSync(target.path);
+        } else {
+          file.deleteSync();
+        }
+      } catch (err) {
+        Log.warning(
+            'Failed to archive/delete collab imported file $rawPath: $err');
+      }
+    }
+  }
+
+  void _archiveOrDeleteAllCollabImportedFiles() {
+    for (final key in List<String>.of(_collabImportedFilePathsByTeam.keys)) {
+      _archiveOrDeleteCollabImportedFilesForTeam(key);
+    }
+
+    _savedCollabAutoSignatures.clear();
+  }
+
+  double _collabFieldHeightMeters() {
+    return (widget.fieldImage.defaultSize.height.toDouble() /
+            widget.fieldImage.pixelsPerMeter.toDouble()) -
+        (2.0 * widget.fieldImage.marginMeters.toDouble());
+  }
+
+  void _prepareUploadedPathJsonForHost(Map<String, dynamic> pathJson) {
+    pathJson['useDefaultConstraints'] = false;
+
+    if (_collabFlipUploadsBottomTop) {
+      _flipUploadedPathJsonBottomTop(pathJson);
+    }
+  }
+
+  void _flipUploadedPathJsonBottomTop(Map<String, dynamic> pathJson) {
+    final fieldHeightMeters = _collabFieldHeightMeters();
+
+    void visit(dynamic node) {
+      if (node is List) {
+        for (final item in node) {
+          visit(item);
+        }
+        return;
+      }
+
+      if (node is! Map) {
+        return;
+      }
+
+      final x = node['x'];
+      final y = node['y'];
+      if (x is num && y is num) {
+        node['y'] = fieldHeightMeters - y.toDouble();
+      }
+
+      for (final entry in node.entries) {
+        final key = entry.key;
+        final value = entry.value;
+
+        if ((key == 'rotationDegrees' ||
+                key == 'rotationOffset' ||
+                key == 'heading') &&
+            value is num) {
+          node[key] = -value.toDouble();
+        } else {
+          visit(value);
+        }
+      }
+    }
+
+    visit(pathJson);
+  }
+
+  String? _teamKeyForCollabOverlayName(String overlayName) {
+    for (final entry in _collabTeamGhostOverlayNames.entries) {
+      if (entry.value == overlayName) {
+        return entry.key;
+      }
+    }
+
+    return null;
+  }
+
+  void _setCollabTeamAutoFlip(String teamKey, bool flipped) {
+    setState(() {
+      _collabTeamAutoFlipped[teamKey] = flipped;
+    });
+
+    _publishCollabSnapshot();
+
+    try {
+      _ghostOverlayDialogSetState?.call(() {});
+    } catch (_) {
+      _ghostOverlayDialogSetState = null;
+    }
+  }
+
+  void _syncCollabTeamOverlayFromTeam(Map<String, dynamic> team) {
+    final teamKey = team['key'];
+    final autoRaw = team['auto'];
+
+    if (teamKey is! String || teamKey.isEmpty || autoRaw is! Map) {
+      return;
+    }
+
+    final auto = Map<String, dynamic>.from(autoRaw);
+    final savedAutoName = auto['hostSavedAutoName']?.toString();
+
+    if (savedAutoName == null || savedAutoName.isEmpty) {
+      return;
+    }
+
+    final overlay = _ensureCollabSavedAutoGhostOverlay(
+      teamKey: teamKey,
+      savedAutoName: savedAutoName,
+      color: team['color'],
+    );
+
+    if (overlay == null) {
+      return;
+    }
+
+    auto['hostGhostOverlayName'] = overlay.name;
+    auto['hostRenderedByGhostOverlay'] = true;
+    auto['hostRuntimeSeconds'] = overlay.totalTimeSeconds;
+    auto.remove('samples');
+    auto.remove('segments');
+    team['auto'] = auto;
+  }
+
+  void _setCollabTeamAutoVisible(String teamKey, bool visible) {
+    setState(() {
+      if (visible) {
+        _hiddenCollabTeamAutoKeys.remove(teamKey);
+      } else {
+        _hiddenCollabTeamAutoKeys.add(teamKey);
+      }
+
+      final overlayName = _collabTeamGhostOverlayNames[teamKey];
+      if (overlayName != null) {
+        for (final overlay in _ghostOverlays) {
+          if (overlay.name == overlayName) {
+            overlay.visible = visible;
+            break;
+          }
+        }
+      }
+    });
+
+    _refreshPreviewDuration();
+    _publishCollabSnapshot();
+
+    try {
+      _ghostOverlayDialogSetState?.call(() {});
+    } catch (_) {
+      _ghostOverlayDialogSetState = null;
+    }
+  }
+
+  GhostAutoOverlay? _ensureCollabSavedAutoGhostOverlay({
+    required String teamKey,
+    required String savedAutoName,
+    required Object? color,
+  }) {
+    final overlayColor = _collabColorFromHex(color);
+    final existingOverlayName = _collabTeamGhostOverlayNames[teamKey];
+
+    if (existingOverlayName != null) {
+      final existingIndex = _ghostOverlays.indexWhere(
+        (overlay) => overlay.name == existingOverlayName,
+      );
+
+      if (existingIndex >= 0 &&
+          existingOverlayName == savedAutoName &&
+          _ghostOverlays[existingIndex].color == overlayColor) {
+        final existing = _ghostOverlays[existingIndex];
+        existing.visible = !_hiddenCollabTeamAutoKeys.contains(teamKey);
+        _refreshPreviewDuration();
+        _publishCollabSnapshot();
+        return existing;
+      }
+
+      if (existingIndex >= 0) {
+        _ghostOverlays.removeAt(existingIndex);
+      }
+
+      _collabTeamGhostOverlayNames.remove(teamKey);
+    }
+
+    final autoFile = File(p.join(_collabAutosDir(), '$savedAutoName.auto'));
+    final overlay = _buildExternalAutoOverlay(
+      autoFile,
+      displayNameOverride: savedAutoName,
+      colorOverride: overlayColor,
+    );
+
+    if (overlay == null) {
+      return null;
+    }
+
+    overlay.visible = !_hiddenCollabTeamAutoKeys.contains(teamKey);
+    _ghostOverlays.add(overlay);
+    _collabTeamGhostOverlayNames[teamKey] = overlay.name;
+    _openTimingSectionId = overlay.name;
+
+    _refreshPreviewDuration();
+    _publishCollabSnapshot();
+
+    return overlay;
   }
 
   List<Map<String, dynamic>> _visibleCollabTeamAutos() {
@@ -1089,16 +1993,83 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         subtitle: Text(
           teamAutos.isEmpty
               ? 'No uploaded browser autos yet.'
-              : '${teamAutos.length} uploaded browser auto(s)',
+              : '${teamAutos.length} uploaded browser/local auto(s)',
         ),
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
         children: [
+          SwitchListTile(
+            dense: true,
+            value: _collabLocalOnlyTeamUploads,
+            title: const Text('Local-only host imports'),
+            subtitle: const Text(
+              'Host file uploads are saved on this PC only and are not sent to browser clients.',
+            ),
+            onChanged: (value) {
+              setState(() {
+                _collabLocalOnlyTeamUploads = value;
+              });
+              try {
+                _ghostOverlayDialogSetState?.call(() {});
+              } catch (_) {
+                _ghostOverlayDialogSetState = null;
+              }
+            },
+          ),
+          SwitchListTile(
+            dense: true,
+            value: _collabArchiveImportedFiles,
+            title: const Text('Archive imported files on stop/change'),
+            subtitle: const Text(
+              'Moves temporary team auto/path files to deploy/pathplanner_collab_archive instead of leaving them in the project.',
+            ),
+            onChanged: (value) {
+              setState(() {
+                _collabArchiveImportedFiles = value;
+              });
+              try {
+                _ghostOverlayDialogSetState?.call(() {});
+              } catch (_) {
+                _ghostOverlayDialogSetState = null;
+              }
+            },
+          ),
+          SwitchListTile(
+            dense: true,
+            value: _collabFlipUploadsBottomTop,
+            title: const Text('Flip uploaded autos bottom/top before saving'),
+            subtitle: const Text(
+              'Mirrors uploaded path coordinates across the field Y axis before creating the host overlay.',
+            ),
+            onChanged: (value) {
+              setState(() {
+                _collabFlipUploadsBottomTop = value;
+              });
+              try {
+                _ghostOverlayDialogSetState?.call(() {});
+              } catch (_) {
+                _ghostOverlayDialogSetState = null;
+              }
+            },
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              icon: const Icon(Icons.upload_file_rounded),
+              label: const Text('Upload Local Team Auto'),
+              onPressed: _collabLocalOnlyTeamUploads
+                  ? _importLocalCollabTeamAuto
+                  : null,
+            ),
+          ),
+          const SizedBox(height: 8),
           if (teamAutos.isEmpty)
             const Padding(
               padding: EdgeInsets.all(8),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text('Approved browser users can upload one auto per team.'),
+                child: Text(
+                  'Approved browser users can upload one auto per team. Local-only host imports can also be added above.',
+                ),
               ),
             )
           else
@@ -1111,43 +2082,90 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
   Widget _buildBrowserTeamAutoRow(Map<String, dynamic> team) {
     final key = team['key'] as String? ?? 'Team';
     final auto = team['auto'];
-    final autoMap = auto is Map ? Map<String, dynamic>.from(auto) : const <String, dynamic>{};
+    final autoMap = auto is Map
+        ? Map<String, dynamic>.from(auto)
+        : const <String, dynamic>{};
     final visible = !_hiddenCollabTeamAutoKeys.contains(key);
     final color = _collabColorFromHex(team['color']);
     final autoName = autoMap['name']?.toString() ?? 'Uploaded auto';
     final totalSeconds = (autoMap['totalSeconds'] is num)
         ? (autoMap['totalSeconds'] as num).toDouble()
         : 0.0;
+    final hostSavedAutoName = autoMap['hostSavedAutoName']?.toString();
+    final hostSavedPathCount = autoMap['hostSavedPathCount'];
+    final hostRuntimeSeconds = autoMap['hostRuntimeSeconds'];
+    final localOnly = autoMap['localOnly'] == true;
+    final hostSaveError = autoMap['hostSaveError']?.toString();
+    final flipped = _collabTeamAutoFlipped[key] == true;
 
-    return CheckboxListTile(
-      dense: true,
-      value: visible,
-      secondary: Container(
-        width: 14,
-        height: 14,
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
+    final subtitleParts = <String>[
+      if (totalSeconds > 0.0 && hostRuntimeSeconds is! num)
+        '${totalSeconds.toStringAsFixed(2)}s',
+      if (localOnly) 'local only',
+      '${team['claimedBy'] ?? 'browser upload'}',
+      if (hostSavedAutoName != null && hostSavedAutoName.isNotEmpty)
+        'saved as $hostSavedAutoName.auto',
+      if (hostSavedPathCount is num)
+        '${hostSavedPathCount.toInt()} path file(s)',
+      if (autoMap['hostRenderedByGhostOverlay'] == true)
+        'host PathPlanner overlay',
+      if (hostRuntimeSeconds is num)
+        'runtime ${hostRuntimeSeconds.toDouble().toStringAsFixed(2)}s',
+      if (autoMap['constraintsFrozen'] == true) 'embedded constraints',
+      if (flipped) 'bottom/top flipped',
+      if (hostSaveError != null && hostSaveError.isNotEmpty)
+        'save error: $hostSaveError',
+      if (autoMap['hostGuiRenderError'] != null)
+        'render error: ${autoMap['hostGuiRenderError']}',
+    ];
+
+    return Card(
+      elevation: 0,
+      child: Column(
+        children: [
+          CheckboxListTile(
+            dense: true,
+            value: visible,
+            secondary: Container(
+              width: 14,
+              height: 14,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+              ),
+            ),
+            title: Text('$key - $autoName'),
+            subtitle: Text(subtitleParts.join(' • ')),
+            onChanged: (value) {
+              _setCollabTeamAutoVisible(key, value == true);
+            },
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilterChip(
+                    selected: flipped,
+                    avatar: const Icon(Icons.flip_rounded, size: 18),
+                    label: const Text('Flip bottom/top'),
+                    onSelected: (value) {
+                      _setCollabTeamAutoFlip(key, value);
+                    },
+                  ),
+                  Chip(
+                    avatar: Icon(Icons.circle, color: color, size: 14),
+                    label: const Text('Overlay color'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
-      title: Text('$key - $autoName'),
-      subtitle: Text(
-        '${totalSeconds.toStringAsFixed(2)}s • ${team['claimedBy'] ?? 'browser upload'}',
-      ),
-      onChanged: (value) {
-        setState(() {
-          if (value == true) {
-            _hiddenCollabTeamAutoKeys.remove(key);
-          } else {
-            _hiddenCollabTeamAutoKeys.add(key);
-          }
-        });
-        try {
-          _ghostOverlayDialogSetState?.call(() {});
-        } catch (_) {
-          _ghostOverlayDialogSetState = null;
-        }
-      },
     );
   }
 
@@ -1208,6 +2226,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
   }
 
   Future<void> _stopCollabSession() async {
+    _archiveOrDeleteAllCollabImportedFiles();
     await _collabServer.stop();
     _collabLanUrls = [];
 
@@ -1242,7 +2261,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     return 'http://localhost:$port';
   }
 
-      Map<String, dynamic> _buildCollabSnapshot() {
+  Map<String, dynamic> _buildCollabSnapshot() {
     final totalSeconds = _totalPreviewTimeSeconds();
 
     return {
@@ -1279,6 +2298,9 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
             totalSeconds: overlay.totalTimeSeconds,
             pauses: overlay.pauses,
             trajectory: overlay.trajectory,
+            flipY: _collabTeamAutoFlipped[
+                    _teamKeyForCollabOverlayName(overlay.name) ?? ''] ==
+                true,
           ),
       ],
     };
@@ -1293,6 +2315,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     required double totalSeconds,
     required List<GhostAutoPauseBlock> pauses,
     required PathPlannerTrajectory? trajectory,
+    bool flipY = false,
   }) {
     return {
       'name': name,
@@ -1311,6 +2334,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         timelineSeconds: totalSeconds,
         nativeSeconds: nativeSeconds,
         pauses: pauses,
+        flipY: flipY,
       ),
     };
   }
@@ -1320,6 +2344,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     required double timelineSeconds,
     required double nativeSeconds,
     required List<GhostAutoPauseBlock> pauses,
+    bool flipY = false,
   }) {
     if (trajectory == null ||
         trajectory.states.isEmpty ||
@@ -1341,11 +2366,14 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
       final state = trajectory.sample(trajectoryTime);
       final normalized = _normalizeFieldPoint(state.pose.translation);
 
+      final normalizedY = (normalized['y'] ?? 0.0).toDouble();
+      final theta = state.pose.rotation.radians.toDouble();
+
       samples.add({
         't': timelineTime,
         'x': normalized['x'],
-        'y': normalized['y'],
-        'theta': state.pose.rotation.radians,
+        'y': flipY ? 1.0 - normalizedY : normalizedY,
+        'theta': flipY ? -theta : theta,
       });
     }
 
@@ -1420,12 +2448,10 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         );
 
         final center = pause.afterSeconds.clamp(0.0, nativeSeconds).toDouble();
-        final nativeStart = (center - (slowWindow / 2.0))
-            .clamp(0.0, nativeSeconds)
-            .toDouble();
-        final nativeEnd = (center + (slowWindow / 2.0))
-            .clamp(0.0, nativeSeconds)
-            .toDouble();
+        final nativeStart =
+            (center - (slowWindow / 2.0)).clamp(0.0, nativeSeconds).toDouble();
+        final nativeEnd =
+            (center + (slowWindow / 2.0)).clamp(0.0, nativeSeconds).toDouble();
         final nativeDuration = nativeEnd - nativeStart;
 
         if (nativeStart > autoSeconds) {
@@ -1506,8 +2532,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         childrenPadding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
         children: [
           AspectRatio(
-            aspectRatio:
-                widget.fieldImage.defaultSize.width /
+            aspectRatio: widget.fieldImage.defaultSize.width /
                 widget.fieldImage.defaultSize.height,
             child: Container(
               decoration: BoxDecoration(
@@ -1556,8 +2581,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
               content: SizedBox(
                 width: MediaQuery.of(context).size.width * 0.88,
                 height: MediaQuery.of(context).size.height * 0.82,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: ListView(
+                  padding: EdgeInsets.zero,
                   children: [
                     Text(
                       'Compare autos and add preview-only timing pauses. Host is always active. Up to two references can be active at once; extras stay benched.',
@@ -1688,22 +2713,18 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                       ],
                     ),
                     const SizedBox(height: 6),
-                    Expanded(
-                      child: SingleChildScrollView(
-                        child: ExpansionPanelList(
-                          expansionCallback: (index, _) {
-                            final id = _timingSectionIds()[index];
-                            final isCurrentlyOpen =
-                                _openTimingSectionId == id;
+                    SingleChildScrollView(
+                      child: ExpansionPanelList(
+                        expansionCallback: (index, _) {
+                          final id = _timingSectionIds()[index];
+                          final isCurrentlyOpen = _openTimingSectionId == id;
 
-                            setState(() {
-                              _openTimingSectionId =
-                                  isCurrentlyOpen ? '' : id;
-                            });
-                            dialogSetState(() {});
-                          },
-                          children: _buildTimingPanels(dialogSetState),
-                        ),
+                          setState(() {
+                            _openTimingSectionId = isCurrentlyOpen ? '' : id;
+                          });
+                          dialogSetState(() {});
+                        },
+                        children: _buildTimingPanels(dialogSetState),
                       ),
                     ),
                   ],
@@ -1861,7 +2882,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                           onPressed: () {
                             setState(() {
                               pauses.remove(pause);
-    _publishCollabSnapshot();
+                              _publishCollabSnapshot();
                             });
                             _refreshPreviewDuration();
                             dialogSetState(() {});
@@ -1878,7 +2899,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                   onPressed: () {
                     setState(() {
                       _ghostOverlays.remove(overlay);
-    _publishCollabSnapshot();
+                      _publishCollabSnapshot();
                       if (_openTimingSectionId == overlay.name) {
                         _openTimingSectionId = _hostTimingId;
                       }
@@ -1903,7 +2924,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     StateSetter? dialogSetState,
   }) async {
     final targetName = overlay?.name ?? widget.auto.name;
-    final targetDuration = overlay?.nativeTimeSeconds ?? _mainNativeTimeSeconds();
+    final targetDuration =
+        overlay?.nativeTimeSeconds ?? _mainNativeTimeSeconds();
     final pauses = overlay?.pauses ?? _mainTimingPauses;
 
     final initialAnchorId = existingPause?.anchorId ??
@@ -1997,7 +3019,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                             if (labelController.text.trim().isEmpty ||
                                 labelController.text == 'Shoot' ||
                                 labelController.text == 'Pause' ||
-                                labelController.text == existingPause?.anchorLabel) {
+                                labelController.text ==
+                                    existingPause?.anchorLabel) {
                               labelController.text = anchor.label;
                             }
                           }
@@ -2065,8 +3088,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                         });
                       },
                     ),
-                    if (selectedMode ==
-                        GhostAutoPauseBlock.slowZoneMode) ...[
+                    if (selectedMode == GhostAutoPauseBlock.slowZoneMode) ...[
                       const SizedBox(height: 10),
                       TextField(
                         controller: slowWindowController,
@@ -2121,9 +3143,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
                     Navigator.of(dialogContext).pop(
                       GhostAutoPauseBlock(
                         id: existingPause?.id ??
-                            DateTime.now()
-                                .microsecondsSinceEpoch
-                                .toString(),
+                            DateTime.now().microsecondsSinceEpoch.toString(),
                         afterSeconds:
                             afterSeconds.clamp(0.0, targetDuration).toDouble(),
                         durationSeconds: durationSeconds,
@@ -2228,8 +3248,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         pathTrajectory = null;
       }
 
-      final pathDuration = pathTrajectory?.getTotalTimeSeconds().toDouble() ??
-          0.0;
+      final pathDuration =
+          pathTrajectory?.getTotalTimeSeconds().toDouble() ?? 0.0;
 
       for (final marker in path.eventMarkers) {
         final markerName = marker.name.toString().trim();
@@ -2242,8 +3262,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
             : _timeForWaypointRelativePos(
                 path: path,
                 trajectory: pathTrajectory,
-                waypointRelativePos:
-                    marker.waypointRelativePos.toDouble(),
+                waypointRelativePos: marker.waypointRelativePos.toDouble(),
               );
 
         anchors.add(
@@ -2334,7 +3353,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     return trajectory.states.last.timeSeconds.toDouble();
   }
 
-      Future<void> _showAddExternalOverlayDialog(
+  Future<void> _showAddExternalOverlayDialog(
     StateSetter dialogSetState,
   ) async {
     const typeGroup = XTypeGroup(
@@ -2374,14 +3393,14 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         overlay.visible = false;
       }
       _ghostOverlays.add(overlay);
-    _publishCollabSnapshot();
+      _publishCollabSnapshot();
       _openTimingSectionId = overlay.name;
     });
     _refreshPreviewDuration();
     dialogSetState(() {});
   }
 
-    dynamic _decodeReferenceJson(File file) {
+  dynamic _decodeReferenceJson(File file) {
     final raw = file.readAsStringSync();
 
     try {
@@ -2407,7 +3426,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     }
   }
 
-    String _repairReferenceJson(String raw) {
+  String _repairReferenceJson(String raw) {
     var repaired = raw;
 
     // Some shared/generated files can contain a stray backslash at the end of a
@@ -2422,10 +3441,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
   }
 
   GhostAutoOverlay? _buildExternalGhostOverlay(String rawPath) {
-    final cleanedPath = rawPath
-        .trim()
-        .replaceAll('"', '')
-        .replaceAll("'", '');
+    final cleanedPath = rawPath.trim().replaceAll('"', '').replaceAll("'", '');
 
     final file = File(cleanedPath);
     if (!file.existsSync()) {
@@ -2446,7 +3462,11 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     return null;
   }
 
-  GhostAutoOverlay? _buildExternalAutoOverlay(File autoFile) {
+  GhostAutoOverlay? _buildExternalAutoOverlay(
+    File autoFile, {
+    String? displayNameOverride,
+    Color? colorOverride,
+  }) {
     try {
       final decoded = _decodeReferenceJson(autoFile);
       if (decoded is! Map) {
@@ -2454,7 +3474,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
       }
 
       final autoName = p.basenameWithoutExtension(autoFile.path);
-      final displayName = _uniqueExternalOverlayName(autoName);
+      final displayName =
+          displayNameOverride ?? _uniqueExternalOverlayName(autoName);
       final autoJson = Map<String, dynamic>.from(decoded);
 
       final auto = PathPlannerAuto.fromJson(
@@ -2495,11 +3516,13 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
       return GhostAutoOverlay(
         name: displayName,
         trajectory: trajectory,
-        color: _ghostColors[_ghostOverlays.length % _ghostColors.length],
+        color: colorOverride ??
+            _ghostColors[_ghostOverlays.length % _ghostColors.length],
         pauseAnchors: _buildPauseAnchorsForPaths(paths),
       );
     } catch (err) {
-      Log.warning('Failed to add reference auto overlay ${autoFile.path}: $err');
+      Log.warning(
+          'Failed to add reference auto overlay ${autoFile.path}: $err');
       return null;
     }
   }
@@ -2542,7 +3565,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         pauseAnchors: _buildPauseAnchorsForPaths([path]),
       );
     } catch (err) {
-      Log.warning('Failed to add reference path overlay ${pathFile.path}: $err');
+      Log.warning(
+          'Failed to add reference path overlay ${pathFile.path}: $err');
       return null;
     }
   }
@@ -2659,7 +3683,7 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
         overlay.visible = false;
       }
       _ghostOverlays.add(overlay);
-    _publishCollabSnapshot();
+      _publishCollabSnapshot();
       _openTimingSectionId = overlay.name;
     });
     dialogSetState(() {});
@@ -2798,7 +3822,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
     }
 
     try {
-      final file = widget.auto.fs.file(p.join(widget.pathDir, '$pathName.path'));
+      final file =
+          widget.auto.fs.file(p.join(widget.pathDir, '$pathName.path'));
       if (!file.existsSync()) {
         return null;
       }
@@ -2931,7 +3956,8 @@ class _SplitAutoEditorState extends State<SplitAutoEditor>
       SnackBar(
         content: Text(
           'Failed to generate trajectory for ${widget.auto.name}. This is likely due to bad control point placement. Please adjust your control points to avoid kinks in the path.',
-          style: TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
+          style:
+              TextStyle(color: Theme.of(context).colorScheme.onErrorContainer),
         ),
         backgroundColor: Theme.of(context).colorScheme.errorContainer,
         behavior: SnackBarBehavior.floating,

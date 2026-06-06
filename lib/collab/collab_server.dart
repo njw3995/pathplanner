@@ -632,10 +632,12 @@ class CollabServer {
   }
 
   Map<String, dynamic> _teamForKey(String key) {
-    return _teams.putIfAbsent(key, () => {
-          'key': key,
-          'locked': false,
-        });
+    return _teams.putIfAbsent(
+        key,
+        () => {
+              'key': key,
+              'locked': false,
+            });
   }
 
   String _safeString(Object? value, {required String fallback}) {
@@ -649,7 +651,8 @@ class CollabServer {
   Map<String, dynamic> _buildTeamPayload() {
     return {
       'hostTeamKey': _hostTeamKey,
-      'teams': _teams.values.map((item) => Map<String, dynamic>.from(item)).toList(),
+      'teams':
+          _teams.values.map((item) => Map<String, dynamic>.from(item)).toList(),
     };
   }
 
@@ -909,7 +912,7 @@ const String _indexHtml = r'''
       <div class="form-grid">
         <input id="loginName" placeholder="Your name" />
         <input id="loginTeam" placeholder="Team number, ex: 191 or 190-2" />
-        <div id="loginTeamLookup" class="muted">Enter a Battlecry team number.</div>
+        <div id="loginTeamLookup" class="muted">Enter a Frenzy team number.</div>
         <input id="loginPairing" placeholder="4 digit pairing number" maxlength="4" />
         <input id="loginHostPassword" type="password" class="hidden" placeholder="1591 host password" />
         <div id="loginHostNote" class="muted hidden">1591 members need the host password. The 1591 password is configured in the PathPlanner host app before the session starts.</div>
@@ -984,7 +987,7 @@ const String _indexHtml = r'''
         <h3>Your Team</h3>
         <div class="form-grid">
           <input id="teamInput" placeholder="Team number, ex: 191 or 190-2" />
-          <div id="teamLookup" class="muted">Enter a Battlecry team number.</div>
+          <div id="teamLookup" class="muted">Enter a Frenzy team number.</div>
           <button id="claimTeam">Switch Team</button>
           <label class="muted">Overlay Color <input id="teamColor" type="color" value="#4f8cff" style="padding:2px; width:54px;" /></label>
           <input id="autoFiles" type="file" accept=".auto,.path" multiple />
@@ -1139,7 +1142,7 @@ const String _indexHtml = r'''
       const def = teamDef(teamKey);
       loginTeamLookupEl.textContent = def
         ? teamLabel(teamKey)
-        : (teamKey ? `Team ${teamKey} is not on the Battlecry list.` : 'Enter a Battlecry team number.');
+        : (teamKey ? `Team ${teamKey} is not on the Frenzy list.` : 'Enter a Frenzy team number.');
 
       const isHostTeam = teamKey === hostTeamKey;
       loginHostPasswordEl.classList.toggle('hidden', !isHostTeam);
@@ -1162,8 +1165,8 @@ const String _indexHtml = r'''
         }
       } else {
         teamLookupEl.textContent = selectedTeamKey
-          ? `Team ${selectedTeamKey} is not on the Battlecry list.`
-          : 'Enter a Battlecry team number.';
+          ? `Team ${selectedTeamKey} is not on the Frenzy list.`
+          : 'Enter a Frenzy team number.';
       }
 
       const canUseTeam = approved && Boolean(def) && claimedTeamKey === selectedTeamKey && !locked && !isHost;
@@ -1181,7 +1184,7 @@ const String _indexHtml = r'''
           ? `Claimed ${teamLabel(selectedTeamKey)}${locked ? ' (Child Lock)' : ''}`
           : `Switch to ${teamLabel(selectedTeamKey)}. Your old team will be removed from claimed teams.`;
       } else {
-        teamStatusEl.textContent = 'Enter a valid Battlecry team number.';
+        teamStatusEl.textContent = 'Enter a valid Frenzy team number.';
       }
     }
 
@@ -1482,18 +1485,6 @@ const String _indexHtml = r'''
         addAutoSummaryRow(auto, total, auto.color || '#8cc4ff');
       }
 
-      for (const team of TEAM_LIST) {
-        const state = teamStates.get(team.key);
-        if (!state?.auto) continue;
-        addAutoSummaryRow({
-          ...state.auto,
-          role: `Team ${team.teamNumber}`,
-          active: true,
-          color: state.color || teamPrimaryColor(team.key),
-          waitCount: 0,
-        }, total, state.color || teamPrimaryColor(team.key));
-      }
-
       renderFieldPreview();
     }
 
@@ -1521,11 +1512,6 @@ const String _indexHtml = r'''
 
     function totalTimelineSeconds() {
       let total = Number(latestSnapshot?.totalSeconds || 0);
-      for (const state of teamStates.values()) {
-        if (state?.auto?.totalSeconds) {
-          total = Math.max(total, Number(state.auto.totalSeconds || 0));
-        }
-      }
       return total;
     }
 
@@ -1643,18 +1629,6 @@ const String _indexHtml = r'''
       for (const auto of latestSnapshot?.autos || []) {
         if (auto.active) {
           autos.push({...auto, color: auto.color || '#8cc4ff'});
-        }
-      }
-
-      for (const team of TEAM_LIST) {
-        const state = teamStates.get(team.key);
-        if (state?.auto) {
-          autos.push({
-            ...state.auto,
-            active: true,
-            role: `Team ${team.teamNumber}`,
-            color: state.color || teamPrimaryColor(team.key),
-          });
         }
       }
 
@@ -1871,18 +1845,25 @@ const String _indexHtml = r'''
         }
 
         const imported = buildImportedAuto(autoFile.name, autoJson, pathMap);
+        const rawPathJsons = {};
+        for (const pathName of imported.pathNames || []) {
+          if (pathMap.has(pathName)) {
+            rawPathJsons[pathName] = pathMap.get(pathName);
+          }
+        }
+        imported.sourceAutoJson = autoJson;
+        imported.sourcePathJsons = rawPathJsons;
+        imported.sourceAutoFileName = autoFile.name;
 
-        if (!imported.samples || imported.samples.length === 0) {
+        if (imported.missingPaths?.length) {
           const foundPaths = imported.pathNames?.length
             ? imported.pathNames.join(', ')
             : 'none found in .auto';
 
-          const missing = imported.missingPaths?.length
-            ? imported.missingPaths.join(', ')
-            : 'none';
+          const missing = imported.missingPaths.join(', ');
 
           teamStatusEl.textContent =
-            `0 samples. Auto paths found: ${foundPaths}. Missing path files: ${missing}. ` +
+            `Missing referenced path files: ${missing}. Auto paths found: ${foundPaths}. ` +
             'Select the project/deploy/pathplanner folder or include all referenced .path files.';
           return;
         }
@@ -1900,7 +1881,7 @@ const String _indexHtml = r'''
           : '';
 
         teamStatusEl.textContent =
-          `Uploaded ${imported.name} with ${imported.samples.length} samples.${missingNote}`;
+          `Uploaded ${imported.name}; host will render it with PathPlanner.${missingNote}`;
       } catch (err) {
         teamStatusEl.textContent = `Could not import auto: ${err.message || err}`;
       }

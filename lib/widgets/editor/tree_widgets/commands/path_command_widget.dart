@@ -32,6 +32,39 @@ class PathCommandWidget extends StatefulWidget {
 }
 
 class _PathCommandWidgetState extends State<PathCommandWidget> {
+  List<String> _dropdownOptions(
+    Iterable<String> sourceOptions,
+    String? selectedValue,
+  ) {
+    final options = <String>{};
+
+    for (final option in sourceOptions) {
+      final trimmed = option.trim();
+      if (trimmed.isNotEmpty) {
+        options.add(trimmed);
+      }
+    }
+
+    final selected = selectedValue?.trim();
+    if (selected != null && selected.isNotEmpty) {
+      options.add(selected);
+    }
+
+    return options.toList()..sort();
+  }
+
+  String? _dropdownValue(
+    Iterable<String> options,
+    String? selectedValue,
+  ) {
+    final selected = selectedValue?.trim();
+    if (selected == null || selected.isEmpty) {
+      return null;
+    }
+
+    return options.contains(selected) ? selected : null;
+  }
+
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focusNode = FocusNode();
 

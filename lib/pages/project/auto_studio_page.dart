@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,80 @@ import 'package:pathplanner/widgets/renamable_title.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:undo/undo.dart';
 
+Future<void> safeRenameOrDeleteSourceIfTargetExists(
+  dynamic sourceFile,
+  String targetPath,
+) async {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && await targetFile.exists()) {
+    if (await sourceFile.exists()) {
+      await sourceFile.delete();
+    }
+    return;
+  }
+
+  try {
+    if (await sourceFile.exists()) {
+      await sourceFile.rename(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && await targetFile.exists()) {
+      if (await sourceFile.exists()) {
+        await sourceFile.delete();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
+void safeRenameOrDeleteSourceIfTargetExistsSync(
+  dynamic sourceFile,
+  String targetPath,
+) {
+  if (sourceFile.path == targetPath) {
+    return;
+  }
+
+  dynamic targetFile;
+  try {
+    targetFile = sourceFile.fileSystem.file(targetPath);
+  } catch (_) {
+    targetFile = null;
+  }
+
+  if (targetFile != null && targetFile.existsSync()) {
+    if (sourceFile.existsSync()) {
+      sourceFile.deleteSync();
+    }
+    return;
+  }
+
+  try {
+    if (sourceFile.existsSync()) {
+      sourceFile.renameSync(targetPath);
+    }
+  } catch (_) {
+    if (targetFile != null && targetFile.existsSync()) {
+      if (sourceFile.existsSync()) {
+        sourceFile.deleteSync();
+      }
+      return;
+    }
+    rethrow;
+  }
+}
+
 const String _riskyTooltip =
     'Risky goes further over the center line and takes more from your opponents.';
 const String _greedyTooltip =
@@ -29,14 +104,13 @@ const String _hubSweepTooltip =
     'Hub Sweep intakes next to the hub for the close sweep.';
 const String _localizeTooltip =
     'Localize Return slows the robot down before going over the bump so it can relocalize itself using AprilTags on the hub.';
-const String _routeTooltip =
-    'Sweep order:\n'
+const String _routeTooltip = 'Sweep order:\n'
     'Far -> Close: center field, then alliance side.\n'
     'Close -> Far: alliance side, then center field.';
 const String _addPassTooltip = 'Add another sweeping pass to the auto.';
-const String _startTooltip =
-    'Rush: normal center-line rush.\n'
+const String _startTooltip = 'Rush: normal center-line rush.\n'
     'Sneaky: hide in trench, wait using Auto Start Delay.';
+
 class AutoStudioPage extends StatefulWidget {
   final SharedPreferences prefs;
   final PathPlannerAuto auto;
@@ -44,6 +118,7 @@ class AutoStudioPage extends StatefulWidget {
   final List<ChoreoPath> allChoreoPaths;
   final List<String> allPathNames;
   final String pathDir;
+  final String? initialAutoFolder;
   final FieldImage fieldImage;
   final ValueChanged<String> onRenamed;
   final VoidCallback? onAutoSaved;
@@ -61,6 +136,7 @@ class AutoStudioPage extends StatefulWidget {
     required this.allChoreoPaths,
     required this.allPathNames,
     required this.pathDir,
+    this.initialAutoFolder,
     required this.fieldImage,
     required this.onRenamed,
     required this.undoStack,
@@ -78,7 +154,7 @@ class AutoStudioPage extends StatefulWidget {
 class _AutoStudioPageState extends State<AutoStudioPage> {
   BattlecryAutoSpec _spec = BattlecryAutoSpec(
     passes: [BattlecryPassSpec()],
-    finalSpec: BattlecryFinalSpec(type: 'dot', dot: 'center'),
+    finalSpec: null,
   );
 
   late List<PathPlannerPath> _allPaths;
@@ -88,6 +164,9 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
   final Map<String, String> _pathCopyMap = {};
   List<String> _importWarnings = [];
   int _editorVersion = 0;
+  late final String? _autoStudioFolder;
+  late final String _autoStudioOriginalAutoName;
+  late final bool _autoStudioOriginalAutoWasTemporary;
 
   @override
   void initState() {
@@ -95,6 +174,10 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
 
     _allPaths = List<PathPlannerPath>.of(widget.allPaths);
     _allPathNames = widget.allPathNames.toSet().toList()..sort();
+    _autoStudioFolder = widget.initialAutoFolder ?? widget.auto.folder;
+    _autoStudioOriginalAutoName = widget.auto.name;
+    _autoStudioOriginalAutoWasTemporary =
+        _isTemporaryAutoStudioName(widget.auto.name);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -117,7 +200,8 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
               pathNames: BattlecryAutoGenerator.collectPathNames(
                 widget.auto.sequence,
               ),
-              namedCommandNames: BattlecryAutoGenerator.collectNamedCommandNames(
+              namedCommandNames:
+                  BattlecryAutoGenerator.collectNamedCommandNames(
                 widget.auto.sequence,
               ),
             );
@@ -227,6 +311,10 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
       onAutoChanged: () {
         setState(() {
           widget.auto.saveFile();
+          _queueAutoStudioGeneratedPathFolderRepair();
+          _deleteTemporaryAutoStudioSourceIfNeeded();
+          _deleteTemporaryAutoStudioSourceIfNeeded();
+          _repairAutoStudioGeneratedPathFoldersNow();
         });
         widget.onAutoSaved?.call();
         if (widget.hotReload) {
@@ -250,7 +338,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         padding: const EdgeInsets.all(14),
         children: [
           Text(
-            'Battlecry Auto Studio',
+            'Frenzy Auto Studio',
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w600,
                 ),
@@ -267,7 +355,8 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
             children: [
               Expanded(
                 child: Tooltip(
-                  message: 'Save this auto as a new editable copy with copied paths.',
+                  message:
+                      'Save this auto as a new editable copy with copied paths.',
                   waitDuration: const Duration(milliseconds: 500),
                   child: OutlinedButton.icon(
                     onPressed: _saveAsEditableCopy,
@@ -354,7 +443,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
             ),
             if (!isFirstPass)
               IconButton(
-                tooltip: 'Remove pass',
                 icon: const Icon(Icons.delete_outline_rounded),
                 onPressed: () {
                   setState(() {
@@ -371,7 +459,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
             label: 'Start',
             value: pass.start,
             values: const ['rush', 'sneaky'],
-            tooltip: _startTooltip,
             onChanged: (value) {
               setState(() {
                 pass.start = value;
@@ -393,7 +480,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         _switchRow(
           label: 'Risky',
           value: pass.risky,
-          tooltip: _riskyTooltip,
           onChanged: (value) {
             setState(() {
               pass.risky = value;
@@ -405,7 +491,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         _switchRow(
           label: 'Greedy',
           value: pass.greedy,
-          tooltip: _greedyTooltip,
           onChanged: (value) {
             setState(() {
               pass.greedy = value;
@@ -417,7 +502,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         _switchRow(
           label: 'Hub Sweep',
           value: pass.hub,
-          tooltip: _hubSweepTooltip,
           onChanged: (value) {
             setState(() {
               pass.hub = value;
@@ -430,7 +514,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
           _switchRow(
             label: 'Localize Return',
             value: pass.localize,
-            tooltip: _localizeTooltip,
             onChanged: (value) {
               setState(() {
                 pass.localize = value;
@@ -444,7 +527,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
             label: 'Route',
             value: pass.route,
             values: const ['Far -> Close', 'Close -> Far'],
-            tooltip: _routeTooltip,
             onChanged: (value) {
               setState(() {
                 pass.route = value;
@@ -457,28 +539,38 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     );
   }
 
+  bool _frenzyDotsEnabled() {
+    return widget.prefs.getBool(PrefsKeys.hasFrenzyDot) ??
+        Defaults.hasFrenzyDot;
+  }
+
   Widget _buildFinalCard() {
     final finalSpec = _spec.finalSpec;
+    final hasFrenzyDot = _frenzyDotsEnabled();
+    final selectedFinalType = !hasFrenzyDot && finalSpec?.type == 'dot'
+        ? 'none'
+        : (finalSpec?.type ?? 'none');
     return _sectionCard(
       title: 'Final',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Tooltip(
-            message: 'Choose whether the auto ends with no extra action, a dot path, or a final non-returning sweep.',
+            message:
+                'Choose whether the auto ends with no extra action, a dot path, or a final non-returning sweep.',
             child: SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'none', label: Text('None')),
-                ButtonSegment(value: 'dot', label: Text('Dot')),
-                ButtonSegment(value: 'sweep', label: Text('Sweep')),
+              segments: [
+                const ButtonSegment(value: 'none', label: Text('None')),
+                if (hasFrenzyDot)
+                  const ButtonSegment(value: 'dot', label: Text('Dot')),
+                const ButtonSegment(value: 'sweep', label: Text('Sweep')),
               ],
-              selected: {finalSpec?.type ?? 'none'},
+              selected: {selectedFinalType},
               onSelectionChanged: (selected) {
                 final value = selected.first;
                 setState(() {
-                  _spec.finalSpec = value == 'none'
-                      ? null
-                      : BattlecryFinalSpec(type: value);
+                  _spec.finalSpec =
+                      value == 'none' ? null : BattlecryFinalSpec(type: value);
                   _importWarnings = [];
                 });
                 _applyBuilderChanges();
@@ -487,12 +579,11 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
           ),
           if (finalSpec != null) ...[
             const SizedBox(height: 12),
-            if (finalSpec.type == 'dot')
+            if (finalSpec.type == 'dot' && hasFrenzyDot) ...[
               _dropdown(
                 label: 'Dot',
                 value: finalSpec.dot,
                 values: const ['center', 'close'],
-                tooltip: 'Choose which Battlecry dot path the auto ends at.',
                 onChanged: (value) {
                   setState(() {
                     finalSpec.dot = value;
@@ -500,12 +591,110 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
                   });
                   _applyBuilderChanges();
                 },
-              )
-            else ...[
+              ),
+              _switchRow(
+                label: 'Sweep Before Dot',
+                value: finalSpec.sweepBeforeDot,
+                onChanged: (value) {
+                  setState(() {
+                    finalSpec.sweepBeforeDot = value;
+                    _importWarnings = [];
+                  });
+                  _applyBuilderChanges();
+                },
+              ),
+              if (finalSpec.sweepBeforeDot) ...[
+                _switchRow(
+                  label: 'Full Sweep',
+                  value: finalSpec.fullSweepBeforeDot,
+                  onChanged: (value) {
+                    setState(() {
+                      finalSpec.fullSweepBeforeDot = value;
+                      _importWarnings = [];
+                    });
+                    _applyBuilderChanges();
+                  },
+                ),
+                if (finalSpec.fullSweepBeforeDot)
+                  _dropdown(
+                    label: 'Route',
+                    value: finalSpec.route,
+                    values: const ['Far -> Close', 'Close -> Far'],
+                    onChanged: (value) {
+                      setState(() {
+                        finalSpec.route = value;
+                        _importWarnings = [];
+                      });
+                      _applyBuilderChanges();
+                    },
+                  )
+                else
+                  _dropdown(
+                    label: 'Half Sweep',
+                    value: finalSpec.halfSweep,
+                    values: const ['close', 'far'],
+                    onChanged: (value) {
+                      setState(() {
+                        finalSpec.halfSweep = value;
+                        _importWarnings = [];
+                      });
+                      _applyBuilderChanges();
+                    },
+                  ),
+                _switchRow(
+                  label: 'Risky',
+                  value: finalSpec.risky,
+                  onChanged: (value) {
+                    setState(() {
+                      finalSpec.risky = value;
+                      _importWarnings = [];
+                    });
+                    _applyBuilderChanges();
+                  },
+                ),
+                if (finalSpec.fullSweepBeforeDot)
+                  _switchRow(
+                    label: 'Greedy',
+                    value: finalSpec.greedy,
+                    onChanged: (value) {
+                      setState(() {
+                        finalSpec.greedy = value;
+                        _importWarnings = [];
+                      });
+                      _applyBuilderChanges();
+                    },
+                  ),
+                _switchRow(
+                  label: 'Hub Sweep',
+                  value: finalSpec.hub,
+                  onChanged: (value) {
+                    setState(() {
+                      finalSpec.hub = value;
+                      _importWarnings = [];
+                    });
+                    _applyBuilderChanges();
+                  },
+                ),
+                Tooltip(
+                  message:
+                      'When enabled, dot sweeps include the pass-start/pass-dot behavior. When disabled, the sweep drives directly to the dot.',
+                  child: _switchRow(
+                    label: 'Pass Option',
+                    value: finalSpec.passOption,
+                    onChanged: (value) {
+                      setState(() {
+                        finalSpec.passOption = value;
+                        _importWarnings = [];
+                      });
+                      _applyBuilderChanges();
+                    },
+                  ),
+                ),
+              ],
+            ] else ...[
               _switchRow(
                 label: 'Risky',
                 value: finalSpec.risky,
-                tooltip: _riskyTooltip,
                 onChanged: (value) {
                   setState(() {
                     finalSpec.risky = value;
@@ -517,7 +706,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
               _switchRow(
                 label: 'Greedy',
                 value: finalSpec.greedy,
-                tooltip: _greedyTooltip,
                 onChanged: (value) {
                   setState(() {
                     finalSpec.greedy = value;
@@ -529,7 +717,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
               _switchRow(
                 label: 'Hub Sweep',
                 value: finalSpec.hub,
-                tooltip: _hubSweepTooltip,
                 onChanged: (value) {
                   setState(() {
                     finalSpec.hub = value;
@@ -542,7 +729,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
                 label: 'Route',
                 value: finalSpec.route,
                 values: const ['Far -> Close', 'Close -> Far'],
-                tooltip: _routeTooltip,
                 onChanged: (value) {
                   setState(() {
                     finalSpec.route = value;
@@ -657,7 +843,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     required String label,
     required bool value,
     required ValueChanged<bool> onChanged,
-    required String tooltip,
+    String tooltip = '',
   }) {
     return Tooltip(
       message: tooltip,
@@ -677,7 +863,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     required String value,
     required List<String> values,
     required ValueChanged<String> onChanged,
-    required String tooltip,
+    String tooltip = '',
   }) {
     return Tooltip(
       message: tooltip,
@@ -754,7 +940,6 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     }
   }
 
-
   Future<void> _saveAsEditableCopy() async {
     final controller = TextEditingController(text: '${widget.auto.name} Copy');
 
@@ -798,12 +983,15 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     }
 
     final safeName = _safeFileName(newName);
+    final targetAutoFolder = _autoStudioFolder;
     setState(() {
       widget.auto.name = safeName;
+      widget.auto.folder = targetAutoFolder;
       _pathCopyMap.clear();
       _importWarnings = [];
     });
 
+    _ensureFolderPref(PrefsKeys.autoFolders, targetAutoFolder);
     _applyBuilderChanges(save: true);
     await _copyGeneratedPathsForThisAuto();
 
@@ -817,6 +1005,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+    _queueAutoStudioGeneratedPathFolderRepair();
   }
 
   Future<void> _loadExistingAutoDialog() async {
@@ -965,10 +1154,102 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     }
   }
 
-  void _applyBuilderChanges({bool save = true}) {
+  Future<void> _safeRenameOrRemoveOldAutoFile(
+    File sourceFile,
+    File targetFile,
+  ) async {
+    if (sourceFile.path == targetFile.path) {
+      return;
+    }
+
+    try {
+      if (await targetFile.exists()) {
+        if (await sourceFile.exists()) {
+          await sourceFile.delete();
+        }
+        return;
+      }
+
+      if (await sourceFile.exists()) {
+        await _safeRenameOrRemoveOldAutoFile(sourceFile, File(targetFile.path));
+      }
+    } on FileSystemException {
+      // Windows throws "Access is denied" when trying to rename over an
+      // existing file. In Save As, the destination may already have been saved,
+      // so never overwrite it here.
+      if (await targetFile.exists()) {
+        if (await sourceFile.exists()) {
+          await sourceFile.delete();
+        }
+        return;
+      }
+
+      if (await sourceFile.exists()) {
+        try {
+          await sourceFile.copy(targetFile.path);
+          await sourceFile.delete();
+          return;
+        } on FileSystemException {
+          rethrow;
+        }
+      }
+
+      rethrow;
+    }
+  }
+
+  void _safeRenameOrRemoveOldAutoFileSync(
+    File sourceFile,
+    File targetFile,
+  ) {
+    if (sourceFile.path == targetFile.path) {
+      return;
+    }
+
+    try {
+      if (targetFile.existsSync()) {
+        if (sourceFile.existsSync()) {
+          sourceFile.deleteSync();
+        }
+        return;
+      }
+
+      if (sourceFile.existsSync()) {
+        _safeRenameOrRemoveOldAutoFileSync(sourceFile, File(targetFile.path));
+      }
+    } on FileSystemException {
+      // Windows throws "Access is denied" when trying to rename over an
+      // existing file. In Save As, the destination may already have been saved,
+      // so never overwrite it here.
+      if (targetFile.existsSync()) {
+        if (sourceFile.existsSync()) {
+          sourceFile.deleteSync();
+        }
+        return;
+      }
+
+      if (sourceFile.existsSync()) {
+        try {
+          sourceFile.copySync(targetFile.path);
+          sourceFile.deleteSync();
+          return;
+        } on FileSystemException {
+          rethrow;
+        }
+      }
+
+      rethrow;
+    }
+  }
+
+  void _applyBuilderChanges({bool save = true, bool updateAuto = true}) {
     BattlecryAutoGenerationResult generated;
     try {
-      generated = BattlecryAutoGenerator.generate(_spec.copy());
+      final generationSpec = _spec.copy();
+      if (!_frenzyDotsEnabled() && generationSpec.finalSpec?.type == 'dot') {
+        generationSpec.finalSpec = null;
+      }
+      generated = BattlecryAutoGenerator.generate(generationSpec);
       if (_pathCopyMap.isNotEmpty) {
         _rewriteCopiedPathNames(generated.sequence);
       }
@@ -996,16 +1277,30 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
 
     setState(() {
       _result = generated;
-      widget.auto.sequence = generated.sequence;
-      widget.auto.resetOdom = true;
-      widget.auto.choreoAuto = false;
-      _editorVersion++;
+
+      if (updateAuto) {
+        widget.auto.sequence = generated.sequence;
+        widget.auto.resetOdom = true;
+        widget.auto.choreoAuto = false;
+        widget.auto.folder = _autoStudioFolder;
+        _editorVersion++;
+      }
     });
+
+    if (!updateAuto) {
+      return;
+    }
+
+    _ensureFolderPref(PrefsKeys.autoFolders, _autoStudioFolder);
 
     _ensureFolderPref(PrefsKeys.autoFolders, widget.auto.folder);
 
     if (save) {
       widget.auto.saveFile();
+      _queueAutoStudioGeneratedPathFolderRepair();
+      _deleteTemporaryAutoStudioSourceIfNeeded();
+      _deleteTemporaryAutoStudioSourceIfNeeded();
+      _repairAutoStudioGeneratedPathFoldersNow();
       widget.onAutoSaved?.call();
       if (widget.hotReload) {
         widget.telemetry?.hotReloadAuto(widget.auto);
@@ -1020,10 +1315,11 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
     final reusedNames = <String>[];
     final missingNames = <String>[];
 
-    final folder = _safeFileName(widget.auto.name);
+    final folder = _autoStudioGeneratedPathFolderName();
     final waypointPrefix = '${_safeFileName(widget.auto.name)}_';
 
-    _ensureFolderPref(PrefsKeys.pathFolders, folder);
+    _ensureFolderPref(
+        PrefsKeys.pathFolders, _autoStudioGeneratedPathFolderName());
 
     for (final sourceName in sourcePathNames) {
       if (_pathCopyMap.containsKey(sourceName)) {
@@ -1031,14 +1327,16 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         continue;
       }
 
-      final src = widget.auto.fs.file(p.join(widget.pathDir, '$sourceName.path'));
+      final src =
+          widget.auto.fs.file(p.join(widget.pathDir, '$sourceName.path'));
       if (!src.existsSync()) {
         missingNames.add(sourceName);
         continue;
       }
 
       final copiedName = _safeFileName('${widget.auto.name} - $sourceName');
-      final dst = widget.auto.fs.file(p.join(widget.pathDir, '$copiedName.path'));
+      final dst =
+          widget.auto.fs.file(p.join(widget.pathDir, '$copiedName.path'));
 
       if (!dst.existsSync()) {
         final raw = src.readAsStringSync();
@@ -1048,7 +1346,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
           continue;
         }
 
-        decoded['folder'] = folder;
+        decoded['folder'] = _autoStudioGeneratedPathFolderName();
         _prefixLinkedWaypoints(decoded, waypointPrefix);
 
         const encoder = JsonEncoder.withIndent('  ');
@@ -1060,6 +1358,7 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
           widget.pathDir,
           widget.auto.fs,
         );
+        copiedPath.folder = _autoStudioGeneratedPathFolderName();
         copiedPath.lastModified = dst.lastModifiedSync().toUtc();
         _addLocalPath(copiedPath);
         copiedNames.add(copiedName);
@@ -1067,12 +1366,17 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         final raw = dst.readAsStringSync();
         final decoded = jsonDecode(raw);
         if (decoded is Map<String, dynamic>) {
+          decoded['folder'] = _autoStudioGeneratedPathFolderName();
+          const encoder = JsonEncoder.withIndent('  ');
+          dst.writeAsStringSync('${encoder.convert(decoded)}\n');
+
           final copiedPath = PathPlannerPath.fromJson(
             decoded,
             copiedName,
             widget.pathDir,
             widget.auto.fs,
           );
+          copiedPath.folder = _autoStudioGeneratedPathFolderName();
           copiedPath.lastModified = dst.lastModifiedSync().toUtc();
           _addLocalPath(copiedPath);
         }
@@ -1101,6 +1405,8 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
         behavior: SnackBarBehavior.floating,
       ),
     );
+    _repairAutoStudioGeneratedPathFoldersNow();
+    _queueAutoStudioGeneratedPathFolderRepair();
   }
 
   void _rewriteCopiedPathNames(Command command) {
@@ -1136,7 +1442,8 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
   }
 
   void _addLocalPath(PathPlannerPath path) {
-    final existingIndex = _allPaths.indexWhere((item) => item.name == path.name);
+    final existingIndex =
+        _allPaths.indexWhere((item) => item.name == path.name);
     setState(() {
       if (existingIndex >= 0) {
         _allPaths[existingIndex] = path;
@@ -1162,6 +1469,41 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
       folders.sort();
       widget.prefs.setStringList(key, folders);
     }
+
+    _ensureFolderInSettingsFile(key, folder);
+  }
+
+  void _ensureFolderInSettingsFile(String key, String folder) {
+    try {
+      final pathplannerDir = p.dirname(widget.pathDir);
+      final settingsFile = widget.auto.fs.file(
+        p.join(pathplannerDir, 'settings.json'),
+      );
+
+      Map<String, dynamic> decoded = {};
+      if (settingsFile.existsSync()) {
+        final raw = settingsFile.readAsStringSync();
+        final parsed = jsonDecode(raw);
+        if (parsed is Map<String, dynamic>) {
+          decoded = Map<String, dynamic>.from(parsed);
+        }
+      }
+
+      final folders =
+          (decoded[key] as List<dynamic>?)?.whereType<String>().toList() ??
+              <String>[];
+
+      if (!folders.contains(folder)) {
+        folders.add(folder);
+        folders.sort();
+        decoded[key] = folders;
+        const encoder = JsonEncoder.withIndent('  ');
+        settingsFile.writeAsStringSync('${encoder.convert(decoded)}\n');
+      }
+    } catch (err) {
+      debugPrint(
+          'Failed to update PathPlanner settings folder $key/$folder: $err');
+    }
   }
 
   List<String> _missingPaths() {
@@ -1174,6 +1516,179 @@ class _AutoStudioPageState extends State<AutoStudioPage> {
       for (final pathName in result.pathNames)
         if (!_allPathNames.contains(pathName)) pathName,
     ];
+  }
+
+  String _autoStudioGeneratedPathFolderName() {
+    final name = widget.auto.name.trim();
+    return name.isEmpty ? 'Auto Studio' : name;
+  }
+
+  bool _isAutoStudioKnownSourceSpacedDashPath(String pathName) {
+    return pathName == 'Shoot - Close' ||
+        pathName == 'Shoot - Center' ||
+        pathName == 'Close - Center' ||
+        pathName == 'Close - Close' ||
+        pathName == 'Sneaky - Center' ||
+        pathName == 'Sneaky - Close';
+  }
+
+  bool _looksLikeAutoStudioGeneratedPathName(String pathName) {
+    final trimmed = pathName.trim();
+    if (trimmed.isEmpty) {
+      return false;
+    }
+
+    if (trimmed.startsWith('${_autoStudioGeneratedPathFolderName()} - ')) {
+      return true;
+    }
+
+    return trimmed.contains(' - ') &&
+        !_isAutoStudioKnownSourceSpacedDashPath(trimmed);
+  }
+
+  Set<String> _autoStudioGeneratedPathNamesForFolderFix() {
+    final folder = _autoStudioGeneratedPathFolderName();
+    final prefix = '$folder - ';
+    final names = <String>{};
+
+    void addIfGenerated(String? pathName) {
+      if (pathName == null) {
+        return;
+      }
+
+      final trimmed = pathName.trim();
+      if (_looksLikeAutoStudioGeneratedPathName(trimmed)) {
+        names.add(trimmed);
+      }
+    }
+
+    try {
+      for (final pathName in widget.auto.getAllPathNames()) {
+        addIfGenerated(pathName);
+      }
+    } catch (_) {
+      // Ignore incomplete intermediate auto states.
+    }
+
+    final result = _result;
+    if (result != null) {
+      for (final pathName in result.pathNames) {
+        addIfGenerated(pathName);
+      }
+    }
+
+    try {
+      final pathsDir = widget.auto.fs.directory(widget.pathDir);
+      if (pathsDir.existsSync()) {
+        for (final entity in pathsDir.listSync()) {
+          final entityPath = entity.path.toString();
+          if (!entityPath.toLowerCase().endsWith('.path')) {
+            continue;
+          }
+
+          final pathName = p.basenameWithoutExtension(entityPath);
+          if (pathName.startsWith(prefix)) {
+            names.add(pathName);
+          }
+        }
+      }
+    } catch (_) {
+      // Best effort. The direct save/copy calls also queue later repairs.
+    }
+
+    return names;
+  }
+
+  void _repairAutoStudioGeneratedPathFoldersNow() {
+    final folder = _autoStudioGeneratedPathFolderName();
+    final pathNames = _autoStudioGeneratedPathNamesForFolderFix();
+
+    if (pathNames.isEmpty) {
+      return;
+    }
+
+    _ensureFolderPref(PrefsKeys.pathFolders, folder);
+    const encoder = JsonEncoder.withIndent('  ');
+
+    for (final pathName in pathNames) {
+      final pathFile = widget.auto.fs.file(
+        p.join(widget.pathDir, '$pathName.path'),
+      );
+
+      if (!pathFile.existsSync()) {
+        continue;
+      }
+
+      try {
+        final decoded = jsonDecode(pathFile.readAsStringSync());
+        if (decoded is! Map<String, dynamic>) {
+          continue;
+        }
+
+        if (decoded['folder'] != folder) {
+          decoded['folder'] = folder;
+          pathFile.writeAsStringSync('${encoder.convert(decoded)}\n');
+        }
+      } catch (err) {
+        debugPrint(
+            'Failed to repair generated path folder for $pathName: $err');
+      }
+    }
+
+    for (final path in _allPaths) {
+      if (pathNames.contains(path.name)) {
+        path.folder = folder;
+      }
+    }
+
+    widget.onPathsChanged?.call();
+  }
+
+  void _queueAutoStudioGeneratedPathFolderRepair() {
+    _repairAutoStudioGeneratedPathFoldersNow();
+
+    for (final delayMs in const [100, 500, 1500, 3000]) {
+      Future<void>.delayed(Duration(milliseconds: delayMs), () {
+        if (!mounted) {
+          return;
+        }
+
+        _repairAutoStudioGeneratedPathFoldersNow();
+      });
+    }
+  }
+
+  bool _isTemporaryAutoStudioName(String name) {
+    final trimmed = name.trim();
+    return trimmed == 'New Frenzy Auto' ||
+        trimmed == 'New Frenzy Auto' ||
+        RegExp(r'^New Frenzy Auto [0-9]+\$').hasMatch(trimmed) ||
+        RegExp(r'^New Frenzy Auto [0-9]+\$').hasMatch(trimmed);
+  }
+
+  void _deleteTemporaryAutoStudioSourceIfNeeded() {
+    final originalName = _autoStudioOriginalAutoName;
+    if (!_autoStudioOriginalAutoWasTemporary ||
+        originalName == widget.auto.name) {
+      return;
+    }
+
+    try {
+      final pathplannerDir = p.dirname(widget.pathDir);
+      final autosDir = p.join(pathplannerDir, 'autos');
+      final oldAuto =
+          widget.auto.fs.file(p.join(autosDir, '$originalName.auto'));
+      final newAuto = widget.auto.fs.file(
+        p.join(autosDir, '${widget.auto.name}.auto'),
+      );
+
+      if (oldAuto.existsSync() && newAuto.existsSync()) {
+        oldAuto.deleteSync();
+        widget.onAutoSaved?.call();
+      }
+    } catch (err) {
+      debugPrint('Failed to delete temporary Auto Studio source auto: $err');
+    }
   }
 
   String _folderForAuto(String name) {

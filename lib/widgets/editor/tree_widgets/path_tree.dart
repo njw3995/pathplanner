@@ -26,6 +26,7 @@ class PathTree extends StatefulWidget {
   final ValueChanged<int?>? onRotTargetSelected;
   final ValueChanged<int?>? onMarkerHovered;
   final ValueChanged<int?>? onMarkerSelected;
+  final ValueChanged<int>? onMarkerSplit;
   final ValueChanged<int>? onWaypointDeleted;
   final ValueChanged<PathPlannerPath?>? onOptimizationUpdate;
   final VoidCallback? onSideSwapped;
@@ -68,6 +69,7 @@ class PathTree extends StatefulWidget {
     this.initiallySelectedRotTarget,
     this.onMarkerHovered,
     this.onMarkerSelected,
+    this.onMarkerSplit,
     this.initiallySelectedMarker,
     required this.undoStack,
     this.runtimeDisplay,
@@ -260,6 +262,7 @@ class _PathTreeState extends State<PathTree> {
       onPathChangedNoSim: widget.onPathChangedNoSim,
       onMarkerHovered: widget.onMarkerHovered,
       onMarkerSelected: widget.onMarkerSelected,
+      onMarkerSplit: widget.onMarkerSplit,
       initiallySelectedMarker: widget.initiallySelectedMarker,
       undoStack: widget.undoStack,
     );
